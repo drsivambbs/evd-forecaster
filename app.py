@@ -1803,6 +1803,141 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
 
 
 # =========================================================================
+# SEIHFR compartmental model — port of scripts/seihfr_model.py
+#
+# State variables: Susceptible / Exposed / Infectious / Hospitalised / Funeral /
+# Recovered. Transmission rates: beta_I (community), beta_H (hospital),
+# beta_F (funeral) — fitted from observed cumulative incidence.
+# =========================================================================
+def seihfr_ode(y, t, beta_I, beta_H, beta_F, alpha, gamma_h, gamma_di,
+                gamma_dh, gamma_r, gamma_f, N):
+    S, E, I, H, F, R_ = y
+    foi = (beta_I * I + beta_H * H + beta_F * F) * S / N
+    dS = -foi
+    dE = foi - alpha * E
+    dI = alpha * E - (gamma_h + gamma_di) * I
+    dH = gamma_h * I - (gamma_dh + gamma_r) * H
+    dF = gamma_di * I + gamma_dh * H - gamma_f * F
+    dR = gamma_r * H + gamma_f * F
+    return [dS, dE, dI, dH, dF, dR]
+
+
+def seihfr_initial_conditions(observed_first_cum: float, reporting_rate: float,
+                               alpha: float, gamma_h: float, gamma_di: float,
+                               N: float):
+    rr = max(reporting_rate, 0.01)
+    I0 = observed_first_cum / rr
+    E_ratio = (1.0 / alpha) / (1.0 / max(gamma_h + gamma_di, 1e-9))
+    E0 = I0 * E_ratio
+    R0 = observed_first_cum
+    S0 = N - I0 - E0 - R0
+    if S0 < 0.9 * N:
+        S0 = N * 0.99
+    return [S0, E0, I0, 0.0, 0.0, R0]
+
+
+def seihfr_run(beta_I, beta_H, beta_F, params_tuple, n_days, y0):
+    from scipy.integrate import odeint
+    alpha, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, N = params_tuple
+    t = np.arange(0, n_days, 1.0)
+    sol = odeint(seihfr_ode, y0, t,
+                 args=(beta_I, beta_H, beta_F, alpha, gamma_h, gamma_di,
+                       gamma_dh, gamma_r, gamma_f, N),
+                 rtol=1e-6, atol=1e-8)
+    new_cases = alpha * sol[:, 1]  # flux E -> I
+    cumulative = np.cumsum(new_cases)
+    return t, sol, new_cases, cumulative
+
+
+def seihfr_fit(observed_cumulative: np.ndarray, params_tuple, y0):
+    """Fit (beta_I, beta_H, beta_F) by least-squares against observed
+    cumulative confirmed (anchored at obs[0])."""
+    from scipy.optimize import minimize
+    n_obs = len(observed_cumulative)
+    n_days = max(n_obs + 5, 30)
+
+    def objective(p):
+        bI, bH, bF = p
+        if any(b <= 0 for b in p):
+            return 1e12
+        try:
+            _, _, _, mc = seihfr_run(bI, bH, bF, params_tuple, n_days, y0)
+            model_cum_obs = mc[:n_obs] + observed_cumulative[0]
+            return float(np.sum((model_cum_obs - observed_cumulative) ** 2))
+        except Exception:
+            return 1e12
+
+    x0 = [0.15, 0.10, 0.30]
+    bounds = [(0.001, 1.0)] * 3
+    result = minimize(objective, x0, method="L-BFGS-B", bounds=bounds,
+                       options={"maxiter": 5000, "ftol": 1e-14, "gtol": 1e-10})
+    return float(result.x[0]), float(result.x[1]), float(result.x[2])
+
+
+SEIHFR_SCENARIO_COLOURS = {
+    "Natural":         "#C0392B",
+    "Funeral control": "#E07B39",
+    "Combined":        "#1E8449",
+}
+
+
+def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
+                  y_log: bool = False) -> go.Figure:
+    """3-panel chart, one panel per scenario, showing daily new cases or
+    cumulative on a shared y-axis."""
+    names = list(scenarios_results.keys())
+    fig = make_subplots(rows=1, cols=len(names),
+                        subplot_titles=[f"<b>{n}</b>" for n in names],
+                        horizontal_spacing=0.09,
+                        shared_yaxes=True)
+    is_daily = view == "daily"
+    series_key = "new_cases" if is_daily else "cumulative"
+    ylabel = ("New cases per day" if is_daily else "Cumulative cases")
+    if y_log:
+        ylabel += " (log)"
+
+    for col_idx, name in enumerate(names, start=1):
+        data = scenarios_results[name]
+        colour = SEIHFR_SCENARIO_COLOURS.get(name, "#1f4e79")
+        fig.add_trace(go.Scatter(
+            x=dates, y=data[series_key], mode="lines", name=name,
+            line=dict(color=colour, width=2.4),
+            showlegend=False,
+            hovertemplate=("%{x|%d-%b-%Y}<br>%{y:,.1f}<extra></extra>"),
+        ), row=1, col=col_idx)
+        # Peak marker
+        peak_idx = int(np.argmax(data[series_key]))
+        fig.add_trace(go.Scatter(
+            x=[dates[peak_idx]], y=[float(data[series_key][peak_idx])],
+            mode="markers", showlegend=False,
+            marker=dict(size=9, color=colour,
+                         line=dict(color="white", width=1.6)),
+            hovertemplate=(
+                "Peak<br>%{x|%d-%b-%Y}<br>%{y:,.1f}<extra></extra>"
+            ),
+        ), row=1, col=col_idx)
+        fig.update_yaxes(type=("log" if y_log else "linear"),
+                          row=1, col=col_idx,
+                          showgrid=True, gridcolor="#eef1f5",
+                          linecolor="#cfd6df")
+        fig.update_xaxes(row=1, col=col_idx,
+                          showgrid=True, gridcolor="#eef1f5",
+                          linecolor="#cfd6df")
+        if col_idx == 1:
+            fig.update_yaxes(title_text=ylabel, row=1, col=col_idx)
+
+    fig.update_layout(
+        template="simple_white", height=520,
+        margin=dict(l=60, r=20, t=80, b=80),
+        font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
+        plot_bgcolor="white", hovermode="x unified",
+    )
+    for ann in fig.layout.annotations:
+        ann.font = dict(size=13, color="#1f4e79")
+    return fig
+
+
+# =========================================================================
 # Step navigation
 # =========================================================================
 if "step" not in st.session_state:
@@ -1821,8 +1956,12 @@ if st.session_state["step"] == "eoo" and (
     or st.session_state.get("fc_scenarios") is None
 ):
     st.session_state["step"] = "data"
+if st.session_state["step"] == "seihfr" and (
+    st.session_state.get("result_series") is None
+):
+    st.session_state["step"] = "data"
 
-# Step indicator (4 steps)
+# Step indicator (5 steps)
 step_now = st.session_state["step"]
 def _pill(label, active):
     return (
@@ -1831,11 +1970,13 @@ def _pill(label, active):
         f'color:{"white" if active else "#5b6573"}; font-weight:500;">{label}</span>'
     )
 step_html = (
-    '<div style="display:flex; gap:0.5rem; margin-bottom:1rem; font-size:0.85rem;">'
+    '<div style="display:flex; gap:0.5rem; margin-bottom:1rem; font-size:0.85rem; '
+    'flex-wrap:wrap;">'
     + _pill("Step 1 · Daily incidence", step_now == "data")
     + _pill("Step 2 · R_t estimation", step_now == "rt")
     + _pill("Step 3 · Forecast", step_now == "forecast")
     + _pill("Step 4 · End of outbreak", step_now == "eoo")
+    + _pill("Step 5 · SEIHFR (natural)", step_now == "seihfr")
     + '</div>'
 )
 st.markdown(step_html, unsafe_allow_html=True)
@@ -2410,6 +2551,428 @@ if st.session_state["step"] == "help":
 
 
 # -------------------------------------------------------------------------
+# STEP 5 — SEIHFR compartmental model (natural / intervention scenarios)
+# -------------------------------------------------------------------------
+if st.session_state["step"] == "seihfr":
+    series_in = st.session_state["result_series"]
+    cfr_used = float(st.session_state.get("cfr_val", 0.34))
+    onset_to_death_used = float(st.session_state.get("lag_val", 10))
+    tpr_used = float(TPR)
+
+    DEFAULT_SE_SRC = {
+        "incubation":  "https://doi.org/10.3201/eid1607.090536",
+        "onset_hosp":  "https://doi.org/10.1017/S0950268806007217",
+        "hosp_death":  "https://doi.org/10.1017/S0950268806007217",
+        "onset_rec":   "https://doi.org/10.3201/eid1607.090536",
+        "death_burial":"https://doi.org/10.1017/S0950268806007217",
+    }
+    DEFAULT_SE_LABEL = {
+        "incubation":   "Wamala 2010, CDC Emerging Infect Dis (Bundibugyo)",
+        "onset_hosp":   "Legrand 2007, Epidemiol Infect (Zaire proxy)",
+        "hosp_death":   "Legrand 2007, Epidemiol Infect (Zaire proxy)",
+        "onset_rec":    "Wamala 2010, CDC Emerging Infect Dis (Bundibugyo)",
+        "death_burial": "Legrand 2007, Epidemiol Infect",
+    }
+
+    def se_param(label, default_val, key, min_val, max_val, step,
+                 is_int=False):
+        st.markdown(
+            f'<div style="font-size:0.85rem; font-weight:500; '
+            f'margin:0.45rem 0 0.15rem 0; color:#333;">{label}</div>',
+            unsafe_allow_html=True,
+        )
+        c1, c2 = st.columns([1, 1.6])
+        with c1:
+            if is_int:
+                val = st.number_input(
+                    "v", min_value=int(min_val), max_value=int(max_val),
+                    value=int(st.session_state.get(f"{key}_val",
+                                                    int(default_val))),
+                    step=int(step), key=f"{key}_val",
+                    label_visibility="collapsed",
+                )
+            else:
+                val = st.number_input(
+                    "v", min_value=float(min_val), max_value=float(max_val),
+                    value=float(st.session_state.get(f"{key}_val",
+                                                      float(default_val))),
+                    step=float(step), key=f"{key}_val",
+                    label_visibility="collapsed",
+                )
+        with c2:
+            src = st.text_input(
+                "s", value=st.session_state.get(f"{key}_src",
+                                                 DEFAULT_SE_SRC[key]),
+                key=f"{key}_src", label_visibility="collapsed",
+            )
+        if src and src.strip():
+            lbl = (DEFAULT_SE_LABEL.get(key, "")
+                   if src == DEFAULT_SE_SRC[key] else src)
+            st.markdown(
+                f'<div style="margin:-0.35rem 0 0.25rem 0; '
+                f'font-size:0.78rem;">'
+                f'<a href="{src}" target="_blank" rel="noopener" '
+                f'style="color:#1f4e79; text-decoration:none; '
+                f'border-bottom:1px dotted #1f4e79;">{lbl}</a></div>',
+                unsafe_allow_html=True,
+            )
+        return val
+
+    series_dates = pd.to_datetime(series_in["date"])
+    obs_first_cum = float(series_in["cumulative_confirmed"].iloc[0])
+    obs_cum_arr = series_in["cumulative_confirmed"].astype(float).values
+
+    left5, right5 = st.columns([1, 1.25], gap="large")
+
+    with left5:
+        st.markdown('<div class="panel-title">SEIHFR inputs</div>',
+                    unsafe_allow_html=True)
+
+        # Locked from earlier steps
+        st.markdown('<div class="section-label">Locked from previous steps</div>',
+                    unsafe_allow_html=True)
+        loc1, loc2 = st.columns(2)
+        loc1.markdown(
+            f'<div style="border:1px solid #d8dde4; background:#f6f8fb; '
+            f'border-radius:6px; padding:0.5rem 0.7rem;">'
+            f'<div style="font-size:0.7rem; color:#5b6573; '
+            f'text-transform:uppercase; letter-spacing:0.05em;">'
+            f'🔒 Daily incidence</div>'
+            f'<div style="font-size:0.92rem; font-weight:600; color:#1f4e79; '
+            f'margin-top:0.15rem;">{len(series_in)} days</div>'
+            f'<div style="font-size:0.72rem; color:#5b6573;">'
+            f'{series_dates.min():%d-%b-%Y} → {series_dates.max():%d-%b-%Y}'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+        loc2.markdown(
+            f'<div style="border:1px solid #d8dde4; background:#f6f8fb; '
+            f'border-radius:6px; padding:0.5rem 0.7rem;">'
+            f'<div style="font-size:0.7rem; color:#5b6573; '
+            f'text-transform:uppercase; letter-spacing:0.05em;">'
+            f'🔒 CFR · onset-to-death</div>'
+            f'<div style="font-size:0.92rem; font-weight:600; color:#1f4e79; '
+            f'margin-top:0.15rem;">{cfr_used:.2f} · {onset_to_death_used:.0f} d</div>'
+            f'<div style="font-size:0.72rem; color:#5b6573;">'
+            f'reusing Step 3 values</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown('<div class="section-label">Population</div>',
+                    unsafe_allow_html=True)
+        N_pop = st.number_input(
+            "Population at risk (N)", min_value=10_000, max_value=500_000_000,
+            value=int(st.session_state.get("seihfr_N", 5_000_000)),
+            step=10_000, format="%d", key="seihfr_N",
+            help="Total people at risk in the affected area (e.g., Ituri "
+                 "Province ≈ 5 million).",
+        )
+
+        st.markdown('<div class="section-label">Disease-stage durations</div>',
+                    unsafe_allow_html=True)
+        incub = se_param("Incubation period (days, median)", 7,
+                          "incubation", 1, 30, 1, is_int=True)
+        onset_hosp = se_param("Onset to hospitalisation (days, mean)", 5.0,
+                               "onset_hosp", 0.5, 30.0, 0.5)
+        hosp_death = se_param("Hospitalisation to death (days, mean)", 4.2,
+                               "hosp_death", 0.5, 30.0, 0.1)
+        onset_rec = se_param("Onset to recovery (days, median)", 10,
+                              "onset_rec", 1, 60, 1, is_int=True)
+        death_burial = se_param("Death to burial (days, mean)", 2.0,
+                                 "death_burial", 0.5, 14.0, 0.5)
+
+        st.markdown('<div class="section-label">Reporting & horizon</div>',
+                    unsafe_allow_html=True)
+        rh1, rh2 = st.columns(2)
+        with rh1:
+            reporting_rate = st.number_input(
+                "Reporting rate (TPR)", min_value=0.01, max_value=1.0,
+                value=float(st.session_state.get("seihfr_rr", tpr_used)),
+                step=0.01, format="%.3f", key="seihfr_rr",
+                help="Fraction of true infectious individuals captured as "
+                     "confirmed cases. Default = Step 1 TPR (0.192).",
+            )
+        with rh2:
+            n_proj = st.number_input(
+                "Horizon (days)", min_value=30, max_value=1095,
+                value=int(st.session_state.get("seihfr_horizon", 365)),
+                step=30, key="seihfr_horizon",
+            )
+
+        st.markdown('<div class="section-label">Intervention scenarios</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Each scenario applies a multiplier to the fitted transmission "
+            "rates (community β_I, hospital β_H, funeral β_F). "
+            "Natural = no intervention (the curve you asked about). "
+            "Funeral / Combined model interventions on each route."
+        )
+        scen_cols = st.columns(3)
+        with scen_cols[0]:
+            st.markdown("**Natural** (no intervention)")
+            nat_I = st.number_input("× β_I (community)", 0.01, 5.0,
+                                     value=float(st.session_state.get(
+                                         "nat_I", 1.0)),
+                                     step=0.05, key="nat_I")
+            nat_H = st.number_input("× β_H (hospital)", 0.01, 5.0,
+                                     value=float(st.session_state.get(
+                                         "nat_H", 1.0)),
+                                     step=0.05, key="nat_H")
+            nat_F = st.number_input("× β_F (funeral)", 0.01, 5.0,
+                                     value=float(st.session_state.get(
+                                         "nat_F", 1.0)),
+                                     step=0.05, key="nat_F")
+        with scen_cols[1]:
+            st.markdown("**Funeral control**")
+            fc_I = st.number_input("× β_I", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "fc_I", 1.0)),
+                                    step=0.05, key="fc_I")
+            fc_H = st.number_input("× β_H", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "fc_H", 1.0)),
+                                    step=0.05, key="fc_H")
+            fc_F = st.number_input("× β_F", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "fc_F", 0.2)),
+                                    step=0.05, key="fc_F")
+        with scen_cols[2]:
+            st.markdown("**Combined**")
+            cb_I = st.number_input("× β_I", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "cb_I", 1.0)),
+                                    step=0.05, key="cb_I")
+            cb_H = st.number_input("× β_H", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "cb_H", 0.4)),
+                                    step=0.05, key="cb_H")
+            cb_F = st.number_input("× β_F", 0.01, 5.0,
+                                    value=float(st.session_state.get(
+                                        "cb_F", 0.2)),
+                                    step=0.05, key="cb_F")
+
+        run_se = st.button("Fit & run SEIHFR", type="primary",
+                            use_container_width=True)
+
+        if run_se:
+            with st.spinner("Fitting β's and integrating ODE…"):
+                alpha = 1.0 / max(incub, 0.5)
+                gamma_h = 1.0 / max(onset_hosp, 0.5)
+                gamma_di = 1.0 / max(onset_to_death_used, 0.5)
+                gamma_dh = 1.0 / max(hosp_death, 0.5)
+                gamma_r = 1.0 / max(onset_rec, 0.5)
+                gamma_f = 1.0 / max(death_burial, 0.5)
+                params_tuple = (alpha, gamma_h, gamma_di, gamma_dh,
+                                 gamma_r, gamma_f, float(N_pop))
+                y0 = seihfr_initial_conditions(
+                    obs_first_cum, float(reporting_rate),
+                    alpha, gamma_h, gamma_di, float(N_pop),
+                )
+                try:
+                    bI, bH, bF = seihfr_fit(obs_cum_arr, params_tuple, y0)
+                except Exception as e:
+                    st.error(f"Fit failed: {e}")
+                    st.stop()
+
+                R0_derived = (bI / max(gamma_r, 1e-9)
+                              + bH / max(gamma_dh, 1e-9)
+                              + bF / max(gamma_f, 1e-9))
+
+                scenarios = {
+                    "Natural":         (bI * nat_I, bH * nat_H, bF * nat_F),
+                    "Funeral control": (bI * fc_I,  bH * fc_H,  bF * fc_F),
+                    "Combined":        (bI * cb_I,  bH * cb_H,  bF * cb_F),
+                }
+                results = {}
+                for name, (BI, BH, BF) in scenarios.items():
+                    t_arr, sol, nc, cum = seihfr_run(
+                        BI, BH, BF, params_tuple, int(n_proj), y0)
+                    results[name] = {
+                        "t": t_arr, "sol": sol,
+                        "new_cases": nc, "cumulative": cum,
+                        "betas": (BI, BH, BF),
+                    }
+                dates_arr = pd.date_range(
+                    series_dates.min(), periods=int(n_proj), freq="D")
+                st.session_state["seihfr_results"] = results
+                st.session_state["seihfr_dates"] = dates_arr
+                st.session_state["seihfr_betas_fit"] = (bI, bH, bF)
+                st.session_state["seihfr_R0"] = float(R0_derived)
+
+    with right5:
+        top_row = st.columns([1, 0.18])
+        with top_row[0]:
+            st.markdown('<div class="panel-title">SEIHFR output</div>',
+                        unsafe_allow_html=True)
+        with top_row[1]:
+            if st.button("← Back", use_container_width=True,
+                          key="back_to_eoo"):
+                st.session_state["step"] = "eoo"
+                st.rerun()
+
+        results = st.session_state.get("seihfr_results")
+        dates_arr = st.session_state.get("seihfr_dates")
+        betas_fit = st.session_state.get("seihfr_betas_fit")
+        R0_derived = st.session_state.get("seihfr_R0")
+
+        if not results:
+            st.markdown(
+                '<div class="placeholder-card">'
+                'Set the disease-stage durations and population on the left, '
+                'then click <b>Fit & run SEIHFR</b>. The app will fit '
+                'β<sub>I</sub>, β<sub>H</sub>, β<sub>F</sub> to your '
+                'observed cumulative cases and then project three scenarios: '
+                '<b>Natural</b> (no intervention), <b>Funeral control</b>, '
+                'and <b>Combined</b>.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            # Fitted parameters banner
+            bI, bH, bF = betas_fit
+            st.markdown(
+                f'<div style="padding:0.55rem 0.9rem; '
+                f'border-left:4px solid #1f4e79; background:#f1f5fa; '
+                f'margin:0.4rem 0; font-size:0.88rem;">'
+                f'<b>Fitted β</b>: community = {bI:.3f}, '
+                f'hospital = {bH:.3f}, funeral = {bF:.3f} · '
+                f'<b>Derived R<sub>0</sub></b> = {R0_derived:.2f}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            tog_l, tog_m, tog_r = st.columns([2, 1, 1])
+            with tog_m:
+                view_mode = st.radio(
+                    "View", ["Daily", "Cumulative"], horizontal=True,
+                    key="seihfr_view_mode", label_visibility="collapsed",
+                )
+            with tog_r:
+                y_log_se = st.toggle("Log y-axis", value=False,
+                                      key="seihfr_y_log")
+            with tog_l:
+                st.caption(
+                    "3-panel SEIHFR projection. "
+                    "Natural = no intervention (the answer to your "
+                    "no-human-action question)."
+                )
+
+            _fig_se = seihfr_chart(
+                results, dates_arr,
+                view=("daily" if view_mode == "Daily" else "cumulative"),
+                y_log=bool(y_log_se),
+            )
+            st.session_state["chart_seihfr"] = _fig_se
+            st.plotly_chart(_fig_se, use_container_width=True)
+
+            # Per-scenario summary cards
+            st.markdown(
+                '<div style="font-size:0.78rem; font-weight:600; '
+                'color:#5b6573; text-transform:uppercase; '
+                'letter-spacing:0.05em; margin:0.7rem 0 0.35rem 0;">'
+                'Per-scenario outcomes</div>',
+                unsafe_allow_html=True,
+            )
+            for name, data in results.items():
+                peak_idx = int(np.argmax(data["new_cases"]))
+                peak_day = dates_arr[peak_idx]
+                peak_val = float(data["new_cases"][peak_idx])
+                final_cum = float(data["cumulative"][-1])
+                final_S = float(data["sol"][-1, 0])
+                attack_rate = (1.0 - final_S / float(
+                    st.session_state.get("seihfr_N", 5_000_000))) * 100
+                BI, BH, BF = data["betas"]
+                st.markdown(
+                    f'<div style="border-left:4px solid '
+                    f'{SEIHFR_SCENARIO_COLOURS.get(name, "#1f4e79")}; '
+                    f'background:#fafbfc; padding:0.55rem 0.85rem; '
+                    f'margin-bottom:0.4rem; font-size:0.85rem; '
+                    f'line-height:1.55;">'
+                    f'<b style="color:'
+                    f'{SEIHFR_SCENARIO_COLOURS.get(name, "#1f4e79")};">'
+                    f'{name}</b> · β = ({BI:.3f}, {BH:.3f}, {BF:.3f})<br>'
+                    f'Peak new cases: <b>{peak_val:,.1f}</b>/day on '
+                    f'<b>{peak_day.strftime("%d-%b-%Y")}</b><br>'
+                    f'Final cumulative (model): '
+                    f'<b>{final_cum:,.0f}</b> · '
+                    f'attack rate: <b>{attack_rate:.2f}%</b>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with st.expander("Show table / data", expanded=False):
+                rows = []
+                for name, data in results.items():
+                    for i, d in enumerate(dates_arr):
+                        rows.append({
+                            "date": d.strftime("%Y-%m-%d"),
+                            "scenario": name,
+                            "S": float(data["sol"][i, 0]),
+                            "E": float(data["sol"][i, 1]),
+                            "I": float(data["sol"][i, 2]),
+                            "H": float(data["sol"][i, 3]),
+                            "F": float(data["sol"][i, 4]),
+                            "R": float(data["sol"][i, 5]),
+                            "new_cases": float(data["new_cases"][i]),
+                            "cumulative": float(data["cumulative"][i]),
+                        })
+                se_df = pd.DataFrame(rows)
+                preview = se_df.copy()
+                preview["date"] = pd.to_datetime(
+                    preview["date"]).dt.strftime("%d-%b-%Y")
+                for c in ["S","E","I","H","F","R","new_cases","cumulative"]:
+                    preview[c] = preview[c].round(1)
+                st.dataframe(preview, use_container_width=True, height=320,
+                              hide_index=True)
+                slug = _slug(st.session_state.get("scenario_name", ""))
+                st.download_button(
+                    "Download seihfr_projections.csv",
+                    se_df.to_csv(index=False).encode("utf-8"),
+                    f"{slug}__seihfr_projections.csv", "text/csv",
+                    use_container_width=True,
+                )
+
+    # Method note
+    st.markdown(
+        """
+        <div style="margin-top:1.2rem; padding:1rem 1.2rem; background:#fafbfc;
+                    border-left:4px solid #1f4e79; border-radius:4px;
+                    font-size:0.9rem; color:#333; line-height:1.55;">
+        <b style="color:#1f4e79;">How the SEIHFR model works</b><br>
+        A 6-compartment ODE: <b>S</b>usceptible → <b>E</b>xposed → <b>I</b>nfectious
+        → <b>H</b>ospitalised → <b>F</b>uneral → <b>R</b>ecovered. Three
+        transmission routes are modelled separately — community
+        (β<sub>I</sub>), hospital (β<sub>H</sub>), and funeral
+        (β<sub>F</sub>) — because Ebola transmits strongly from corpses
+        (Wamala 2010 adjusted OR for funeral ritual = 3.83).
+        <ul style="margin:0.4rem 0 0.4rem 1.2rem;">
+          <li>Stage durations (incubation, onset-to-hospitalisation, etc.) define
+              the transition rates α, γ<sub>h</sub>, γ<sub>di</sub>,
+              γ<sub>dh</sub>, γ<sub>r</sub>, γ<sub>f</sub>.</li>
+          <li>The three β's are <b>fitted</b> by least-squares to your
+              observed cumulative confirmed cases, with initial conditions
+              derived from the first observation and the reporting rate.</li>
+          <li>Each scenario applies multipliers to the fitted β's. <b>Natural</b>
+              keeps everything at 1.0 — answering "what if no human action?"
+              <b>Funeral control</b> cuts β<sub>F</sub> to 20% (safe burials).
+              <b>Combined</b> additionally cuts β<sub>H</sub> to 40% (PPE,
+              isolation).</li>
+          <li>Unlike the renewal forecast, this model <b>tracks the susceptible
+              pool</b>, so the natural curve rises, peaks, and declines on its
+              own as susceptibles run out (no intervention needed).</li>
+        </ul>
+        References: Legrand et al. 2007 (model framework); Wamala et al. 2010
+        (Bundibugyo natural-history parameters); Djaafara et al. 2021
+        (EOO calibration).
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.stop()
+
+
+# -------------------------------------------------------------------------
 # STEP 4 — End-of-outbreak predictor (rendered if step == "eoo", then st.stop())
 # -------------------------------------------------------------------------
 if st.session_state["step"] == "eoo":
@@ -2675,6 +3238,13 @@ if st.session_state["step"] == "eoo":
                     f"{slug}__eoo_probability.csv", "text/csv",
                     use_container_width=True,
                 )
+
+            # Next: SEIHFR natural-curve model
+            if st.button("Next: SEIHFR (natural curve)  →",
+                          type="primary", use_container_width=True,
+                          key="goto_seihfr"):
+                st.session_state["step"] = "seihfr"
+                st.rerun()
 
     # Method note
     st.markdown(
