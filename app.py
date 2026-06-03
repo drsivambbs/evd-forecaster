@@ -1849,17 +1849,21 @@ def seihfr_run(beta_I, beta_H, beta_F, params_tuple, n_days, y0):
     return t, sol, new_cases, cumulative
 
 
-def seihfr_fit(observed_cumulative: np.ndarray, params_tuple, y0):
-    """Fit (beta_I, beta_H, beta_F) by least-squares against observed
-    cumulative confirmed (anchored at obs[0])."""
-    from scipy.optimize import minimize
+def seihfr_fit(observed_cumulative: np.ndarray, params_tuple, y0,
+                ratio_H: float = 2.0, ratio_F: float = 3.83):
+    """Fit beta_I by 1-parameter least-squares; derive beta_H = ratio_H * beta_I
+    and beta_F = ratio_F * beta_I. Ratios are anchored on Wamala 2010 odds
+    ratios so the three transmission routes can't collapse to zero
+    (which happens when fitting all three independently against sparse data)."""
+    from scipy.optimize import minimize_scalar
     n_obs = len(observed_cumulative)
     n_days = max(n_obs + 5, 30)
 
-    def objective(p):
-        bI, bH, bF = p
-        if any(b <= 0 for b in p):
+    def objective(bI):
+        if bI <= 0:
             return 1e12
+        bH = bI * ratio_H
+        bF = bI * ratio_F
         try:
             _, _, _, mc = seihfr_run(bI, bH, bF, params_tuple, n_days, y0)
             model_cum_obs = mc[:n_obs] + observed_cumulative[0]
@@ -1867,11 +1871,11 @@ def seihfr_fit(observed_cumulative: np.ndarray, params_tuple, y0):
         except Exception:
             return 1e12
 
-    x0 = [0.15, 0.10, 0.30]
-    bounds = [(0.001, 1.0)] * 3
-    result = minimize(objective, x0, method="L-BFGS-B", bounds=bounds,
-                       options={"maxiter": 5000, "ftol": 1e-14, "gtol": 1e-10})
-    return float(result.x[0]), float(result.x[1]), float(result.x[2])
+    result = minimize_scalar(objective, bounds=(1e-4, 1.0),
+                               method="bounded",
+                               options={"xatol": 1e-7})
+    bI = float(result.x)
+    return bI, bI * ratio_H, bI * ratio_F
 
 
 SEIHFR_SCENARIO_COLOURS = {
@@ -2565,6 +2569,8 @@ if st.session_state["step"] == "seihfr":
         "hosp_death":  "https://doi.org/10.1017/S0950268806007217",
         "onset_rec":   "https://doi.org/10.3201/eid1607.090536",
         "death_burial":"https://doi.org/10.1017/S0950268806007217",
+        "ratio_F":     "https://doi.org/10.3201/eid1607.090536",
+        "ratio_H":     "https://doi.org/10.3201/eid1607.090536",
     }
     DEFAULT_SE_LABEL = {
         "incubation":   "Wamala 2010, CDC Emerging Infect Dis (Bundibugyo)",
@@ -2572,6 +2578,8 @@ if st.session_state["step"] == "seihfr":
         "hosp_death":   "Legrand 2007, Epidemiol Infect (Zaire proxy)",
         "onset_rec":    "Wamala 2010, CDC Emerging Infect Dis (Bundibugyo)",
         "death_burial": "Legrand 2007, Epidemiol Infect",
+        "ratio_F":      "Wamala 2010 — funeral ritual adjusted OR = 3.83",
+        "ratio_H":      "Wamala 2010 — hospital visit unadjusted OR = 8.71 (using 2.0 conservatively)",
     }
 
     def se_param(label, default_val, key, min_val, max_val, step,
@@ -2619,8 +2627,15 @@ if st.session_state["step"] == "seihfr":
         return val
 
     series_dates = pd.to_datetime(series_in["date"])
-    obs_first_cum = float(series_in["cumulative_confirmed"].iloc[0])
-    obs_cum_arr = series_in["cumulative_confirmed"].astype(float).values
+    # Trim back-extrapolated leading-zero rows for SEIHFR seeding — keeping
+    # them makes the initial conditions degenerate (I0 ≈ 0) and the model
+    # can't reproduce the observed rise.
+    obs_cum_full = series_in["cumulative_confirmed"].astype(float).values
+    _nz = np.where(obs_cum_full > 0)[0]
+    _start_idx = int(_nz[0]) if len(_nz) > 0 else 0
+    obs_cum_arr = obs_cum_full[_start_idx:]
+    se_fit_start_date = series_dates.iloc[_start_idx]
+    obs_first_cum = float(obs_cum_arr[0]) if len(obs_cum_arr) else 1.0
 
     left5, right5 = st.columns([1, 1.25], gap="large")
 
@@ -2680,6 +2695,20 @@ if st.session_state["step"] == "seihfr":
                               "onset_rec", 1, 60, 1, is_int=True)
         death_burial = se_param("Death to burial (days, mean)", 2.0,
                                  "death_burial", 0.5, 14.0, 0.5)
+
+        st.markdown('<div class="section-label">Transmission-route ratios</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Wamala 2010 reports the funeral-ritual exposure adjusted OR = 3.83 "
+            "and the hospital-visit unadjusted OR = 8.71. Fixing the ratios of "
+            "β_F/β_I and β_H/β_I lets us fit just one transmission scale (β_I) "
+            "to the sparse data, so the funeral and hospital routes are never "
+            "collapsed to zero."
+        )
+        ratio_F = se_param("β_F / β_I  (funeral relative to community)", 3.83,
+                            "ratio_F", 0.1, 20.0, 0.1)
+        ratio_H = se_param("β_H / β_I  (hospital relative to community)", 2.0,
+                            "ratio_H", 0.1, 20.0, 0.1)
 
         st.markdown('<div class="section-label">Reporting & horizon</div>',
                     unsafe_allow_html=True)
@@ -2769,7 +2798,10 @@ if st.session_state["step"] == "seihfr":
                     alpha, gamma_h, gamma_di, float(N_pop),
                 )
                 try:
-                    bI, bH, bF = seihfr_fit(obs_cum_arr, params_tuple, y0)
+                    bI, bH, bF = seihfr_fit(
+                        obs_cum_arr, params_tuple, y0,
+                        ratio_H=float(ratio_H), ratio_F=float(ratio_F),
+                    )
                 except Exception as e:
                     st.error(f"Fit failed: {e}")
                     st.stop()
