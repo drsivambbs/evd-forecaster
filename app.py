@@ -4,7 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats import gamma as gamma_dist
-from datetime import date
+from datetime import date, datetime
+from io import BytesIO
 
 st.set_page_config(page_title="EVD Forecaster", layout="wide")
 
@@ -100,7 +101,7 @@ st.markdown(
 )
 
 # Scenario name (flows into chart titles and downloaded filenames)
-hdr_l, hdr_r = st.columns([2.2, 1])
+hdr_l, hdr_m, hdr_r = st.columns([2.4, 0.9, 0.9])
 with hdr_l:
     scenario_name = st.text_input(
         "Scenario / outbreak label",
@@ -109,14 +110,44 @@ with hdr_l:
         help="Stamped onto chart titles and CSV filenames so you can keep runs apart.",
         key="scenario_name",
     )
-with hdr_r:
+with hdr_m:
     st.markdown('<div style="margin-top:1.7rem;"></div>',
                 unsafe_allow_html=True)
-    if st.button("Open input glossary", use_container_width=True,
+    if st.button("Input glossary", use_container_width=True,
                  key="open_glossary"):
         st.session_state["prev_step"] = st.session_state.get("step", "data")
         st.session_state["step"] = "help"
         st.rerun()
+with hdr_r:
+    st.markdown('<div style="margin-top:1.7rem;"></div>',
+                unsafe_allow_html=True)
+    if st.button("Reset all", use_container_width=True, key="reset_all",
+                 help="Clear every input and result. The page reloads with defaults."):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
+
+# Persistent Excel-export button row (just below the header)
+ex_l, ex_r = st.columns([3.4, 1])
+with ex_r:
+    try:
+        excel_bytes = build_excel_report()
+        slug = _slug(st.session_state.get("scenario_name", ""))
+        fname = (f"{slug}__evd_forecaster_report__"
+                 f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
+        st.download_button(
+            "Generate Excel report",
+            data=excel_bytes,
+            file_name=fname,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="excel_export",
+            help="Downloads a single .xlsx with Dashboard, Inputs, Daily incidence, "
+                 "R_t estimates, Forecast, and EOO probability sheets — based on "
+                 "whatever is currently in the app.",
+        )
+    except Exception as e:
+        st.caption(f"Excel export unavailable: {e}")
 
 
 # Project colour palette (matched to outputs/*.png)
@@ -138,6 +169,238 @@ def _slug(text: str) -> str:
     import re
     s = re.sub(r"[^A-Za-z0-9]+", "_", (text or "").strip()).strip("_")
     return s[:40].lower() or "scenario"
+
+
+def build_excel_report() -> bytes:
+    """Bundle every input + output currently in session_state into one .xlsx.
+
+    Sheets: Dashboard, Inputs, Daily incidence, Rt estimates, Forecast, EOO probability.
+    Missing data is gracefully skipped — the user can export at any pipeline stage.
+    """
+    ss = st.session_state
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+
+        # ---------- Dashboard sheet ----------
+        dashboard_rows = [
+            ("Scenario name", ss.get("scenario_name", "")),
+            ("Report generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("", ""),
+        ]
+        series = ss.get("result_series")
+        if series is not None and len(series):
+            sd = pd.to_datetime(series["date"]).min().strftime("%d-%b-%Y")
+            ed = pd.to_datetime(series["date"]).max().strftime("%d-%b-%Y")
+            dashboard_rows += [
+                ("STEP 1 — DAILY INCIDENCE", ""),
+                ("Date range", f"{sd} → {ed}"),
+                ("Days produced", len(series)),
+                ("Total new confirmed (sum)",
+                 float(series["new_confirmed"].sum())),
+                ("Total new suspected (sum)",
+                 float(series["new_suspected"].sum())),
+                ("Total new deaths (sum)",
+                 float(series["new_deaths"].sum())),
+                ("", ""),
+            ]
+        rt_df = ss.get("rt_df")
+        si_used = float(ss.get("si_mean_primary_val", 15.3))
+        if rt_df is not None and not rt_df.empty:
+            prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
+            if not prim.empty:
+                latest = prim.iloc[-1]
+                dashboard_rows += [
+                    ("STEP 2 — R_t ESTIMATION", ""),
+                    ("Latest R_t mean", round(float(latest["rt_mean"]), 3)),
+                    ("Latest R_t 95% CrI lower",
+                     round(float(latest["rt_lower"]), 3)),
+                    ("Latest R_t 95% CrI upper",
+                     round(float(latest["rt_upper"]), 3)),
+                    ("Posterior Gamma shape",
+                     round(float(latest.get("shape_post", float("nan"))), 3)),
+                    ("Posterior Gamma rate",
+                     round(float(latest.get("rate_post", float("nan"))), 3)),
+                    ("R_t selected for forecast",
+                     round(float(ss.get("selected_rt", float("nan"))), 3)),
+                    ("R_t basis", ss.get("selected_rt_basis", "")),
+                    ("", ""),
+                ]
+        scenarios_out = ss.get("fc_scenarios")
+        horizon_dates = ss.get("fc_dates")
+        if scenarios_out and horizon_dates is not None:
+            dashboard_rows += [("STEP 3 — FORECAST (per scenario)", "")]
+            scen_lbl = {"S1": "Delayed response", "S2": "Moderate response",
+                         "S3": "Strong combined response"}
+            for name, data in scenarios_out.items():
+                def _med(metric):
+                    v = data[metric]
+                    return v["median"] if isinstance(v, dict) else v
+                med_conf = _med("cum_confirmed")
+                med_death = _med("cum_deaths")
+                med_new_conf = _med("new_confirmed")
+                peak_idx = int(np.argmax(med_new_conf))
+                dashboard_rows += [
+                    (f"  {scen_lbl.get(name, name)} — final cumulative confirmed (median)",
+                     round(float(med_conf[-1]), 0)),
+                    (f"  {scen_lbl.get(name, name)} — final cumulative deaths (median)",
+                     round(float(med_death[-1]), 0)),
+                    (f"  {scen_lbl.get(name, name)} — peak new confirmed",
+                     round(float(med_new_conf[peak_idx]), 1)),
+                    (f"  {scen_lbl.get(name, name)} — peak day",
+                     horizon_dates[peak_idx].strftime("%d-%b-%Y")),
+                ]
+            dashboard_rows += [("", "")]
+        valid_plc = ss.get("eoo_valid_plc")
+        eoo_probs = ss.get("eoo_probs")
+        eoo_days = ss.get("eoo_days")
+        thr = ss.get("eoo_threshold", 0.95)
+        if valid_plc and eoo_probs is not None:
+            dashboard_rows += [("STEP 4 — END OF OUTBREAK", "")]
+            cross = np.where(eoo_probs >= thr)[0]
+            cross_day = int(eoo_days[cross[0]]) if len(cross) > 0 else None
+            for s_name, plc in valid_plc.items():
+                lbl = {"S1": "Delayed", "S2": "Moderate",
+                       "S3": "Strong combined"}.get(s_name, s_name)
+                dashboard_rows += [
+                    (f"  {lbl} — projected last case",
+                     plc.strftime("%d-%b-%Y")),
+                    (f"  {lbl} — WHO 42-day EOO declaration",
+                     (plc + pd.Timedelta(days=42)).strftime("%d-%b-%Y")),
+                    (f"  {lbl} — Djaafara 63-day preliminary",
+                     (plc + pd.Timedelta(days=63)).strftime("%d-%b-%Y")),
+                    (f"  {lbl} — Djaafara final (63 + 90 d)",
+                     (plc + pd.Timedelta(days=153)).strftime("%d-%b-%Y")),
+                ]
+                if cross_day is not None:
+                    dashboard_rows += [
+                        (f"  {lbl} — P(extinct) ≥ {thr:.0%} on",
+                         (plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")),
+                    ]
+        pd.DataFrame(dashboard_rows, columns=["Metric", "Value"]).to_excel(
+            writer, sheet_name="Dashboard", index=False)
+
+        # ---------- Inputs sheet ----------
+        input_rows = []
+        for label, key, default, src_key in [
+            ("Scenario name", "scenario_name", "", None),
+            ("SI mean primary (days)", "si_mean_primary_val", 15.3,
+             "si_mean_primary_src"),
+            ("SI SD primary (days)", "si_sd_primary_val", 9.3,
+             "si_sd_primary_src"),
+            ("Sensitivity SI mean (days)", "si_mean_sens_val", 12.0,
+             "si_mean_sens_src"),
+            ("Sensitivity SI SD (days)", "si_sd_sens_val", 5.0,
+             "si_sd_sens_src"),
+            ("R_t window (days)", "window_val", 7, "window_src"),
+            ("R_t prior shape", "shape_prior_val", 1.0, "shape_prior_src"),
+            ("R_t prior rate", "rate_prior_val", 0.2, "rate_prior_src"),
+            ("R_t selected for forecast", "selected_rt", None, None),
+            ("R_t selection basis", "selected_rt_basis", None, None),
+            ("CFR", "cfr_val", 0.34, "cfr_src"),
+            ("Onset-to-death lag (days)", "lag_val", 10, "lag_src"),
+            ("Forecast horizon (days)", "forecast_horizon", None, None),
+            ("Forecast start date", "forecast_start_date", None, None),
+            ("S1 target R_t", "S1_target", 1.0, None),
+            ("S1 days to target", "S1_days", 60, None),
+            ("S2 target R_t", "S2_target", 1.0, None),
+            ("S2 days to target", "S2_days", 30, None),
+            ("S3 target R_t", "S3_target", 0.6, None),
+            ("S3 days to target", "S3_days", 30, None),
+            ("EOO simulations", "eoo_n_sim", None, None),
+            ("EOO days range", "eoo_max_days", None, None),
+            ("EOO declaration threshold", "eoo_threshold", 0.95, None),
+            ("EOO offspring dispersion k", "eoo_k_disp", 0.18, None),
+        ]:
+            val = ss.get(key, default)
+            src = ss.get(src_key) if src_key else ""
+            if val is not None:
+                input_rows.append({"Input": label, "Value": val,
+                                    "Source / DOI": src or ""})
+        pd.DataFrame(input_rows).to_excel(writer, sheet_name="Inputs",
+                                            index=False)
+
+        # ---------- Daily incidence sheet ----------
+        if series is not None and len(series):
+            di = series.copy()
+            di["date"] = pd.to_datetime(di["date"]).dt.strftime("%Y-%m-%d")
+            di.to_excel(writer, sheet_name="Daily incidence", index=False)
+
+        # ---------- R_t estimates sheet ----------
+        if rt_df is not None and not rt_df.empty:
+            rt_out = rt_df.copy()
+            rt_out["date"] = pd.to_datetime(rt_out["date"]).dt.strftime("%Y-%m-%d")
+            rt_out.to_excel(writer, sheet_name="Rt estimates", index=False)
+
+        # ---------- Forecast sheet ----------
+        if scenarios_out and horizon_dates is not None:
+            rows = []
+            for name, data in scenarios_out.items():
+                for i, d in enumerate(horizon_dates):
+                    def _v(metric, key):
+                        v = data[metric]
+                        return float(v[key][i]) if isinstance(v, dict) else float(v[i])
+                    rows.append({
+                        "date": d.strftime("%Y-%m-%d"),
+                        "scenario": name,
+                        "new_confirmed_median": _v("new_confirmed", "median"),
+                        "new_confirmed_lower":  _v("new_confirmed", "lower"),
+                        "new_confirmed_upper":  _v("new_confirmed", "upper"),
+                        "new_suspected_median": _v("new_suspected", "median"),
+                        "new_deaths_median":    _v("new_deaths", "median"),
+                        "cumulative_confirmed_median": _v("cum_confirmed", "median"),
+                        "cumulative_confirmed_lower":  _v("cum_confirmed", "lower"),
+                        "cumulative_confirmed_upper":  _v("cum_confirmed", "upper"),
+                        "cumulative_suspected_median": _v("cum_suspected", "median"),
+                        "cumulative_deaths_median":    _v("cum_deaths", "median"),
+                        "cumulative_deaths_lower":     _v("cum_deaths", "lower"),
+                        "cumulative_deaths_upper":     _v("cum_deaths", "upper"),
+                    })
+            pd.DataFrame(rows).to_excel(writer, sheet_name="Forecast",
+                                          index=False)
+
+        # ---------- EOO probability sheet ----------
+        if valid_plc and eoo_probs is not None and eoo_days is not None:
+            rows = []
+            for s_name, plc in valid_plc.items():
+                for i, d in enumerate(eoo_days):
+                    rows.append({
+                        "scenario": s_name,
+                        "days_after_last_case": int(d),
+                        "projected_date":
+                            (plc + pd.Timedelta(days=int(d))).strftime("%Y-%m-%d"),
+                        "eoo_probability": round(float(eoo_probs[i]), 4),
+                        "who_42day_met": int(d) >= 42,
+                        "djaafara_63day_met": int(d) >= 63,
+                    })
+            pd.DataFrame(rows).to_excel(writer, sheet_name="EOO probability",
+                                          index=False)
+    return buf.getvalue()
+
+
+# Keys whose persistence is tracked across step navigation. These keys hold
+# inputs/widget values that survive switching between Step 1/2/3/4/help; the
+# Reset all button clears them.
+INPUT_STATE_KEYS = [
+    "scenario_name", "snapshots_editor",
+    "si_mean_primary_val", "si_mean_primary_src",
+    "si_sd_primary_val", "si_sd_primary_src",
+    "si_mean_sens_val", "si_mean_sens_src",
+    "si_sd_sens_val", "si_sd_sens_src",
+    "window_val", "window_src",
+    "shape_prior_val", "shape_prior_src",
+    "rate_prior_val", "rate_prior_src",
+    "rt_preset", "selected_rt", "selected_rt_basis",
+    "cfr_val", "cfr_src", "lag_val", "lag_src",
+    "forecast_horizon", "forecast_start_date",
+    "obs_conf_input", "obs_susp_input", "obs_death_input",
+    "S1_target", "S1_days", "S2_target", "S2_days", "S3_target", "S3_days",
+    "eoo_n_sim", "eoo_max_days", "eoo_threshold", "eoo_k_disp",
+    "fc_y_log", "result_series", "result_chart_snaps", "rt_df",
+    "rt_si_mean", "fc_scenarios", "fc_dates", "fc_baselines",
+    "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
+    "fc_preview_traj", "fc_preview_dates",
+    "eoo_days", "eoo_probs", "eoo_valid_plc",
+]
 
 
 def attach_source(df: pd.DataFrame, mode: str, whole: str) -> pd.DataFrame:
@@ -1391,26 +1654,31 @@ if st.session_state["step"] == "eoo":
         with s1:
             n_sim = st.number_input(
                 "Simulations", min_value=100, max_value=5000,
-                value=1000, step=100,
+                value=st.session_state.get("eoo_n_sim", 1000), step=100,
+                key="eoo_n_sim",
                 help="Independent stochastic descendant-tree simulations.",
             )
         with s2:
             max_days = st.number_input(
                 "Days range", min_value=42, max_value=365,
-                value=180, step=10,
+                value=st.session_state.get("eoo_max_days", 180), step=10,
+                key="eoo_max_days",
                 help="Compute P(extinct) from day 0 to this many days after "
                      "the projected last case.",
             )
         s3, s4 = st.columns(2)
         with s3:
             threshold = st.slider(
-                "Declaration threshold (P)", 0.50, 0.99, 0.95, 0.01,
+                "Declaration threshold (P)", 0.50, 0.99,
+                st.session_state.get("eoo_threshold_input", 0.95), 0.01,
+                key="eoo_threshold_input",
                 help="EOO is declared when P(extinct) exceeds this.",
             )
         with s4:
             k_disp = st.number_input(
                 "Offspring dispersion k", min_value=0.05, max_value=10.0,
-                value=0.18, step=0.01, format="%.2f",
+                value=st.session_state.get("eoo_k_disp", 0.18),
+                step=0.01, format="%.2f", key="eoo_k_disp",
                 help="NB dispersion. Small k = more superspreading. "
                      "EBOV ≈ 0.18 (Lloyd-Smith 2005, Nature).",
             )
@@ -1666,13 +1934,17 @@ if st.session_state["step"] == "forecast":
         w1, w2 = st.columns(2)
         with w1:
             start_date = st.date_input(
-                "Start date", value=last_input_date.date(),
+                "Start date",
+                value=st.session_state.get("forecast_start_date",
+                                            last_input_date.date()),
                 help="Projection starts on the day AFTER this date.",
+                key="forecast_start_date",
             )
         with w2:
             horizon = st.number_input(
                 "Horizon (days)", min_value=7, max_value=720,
-                value=180, step=7,
+                value=st.session_state.get("forecast_horizon", 180), step=7,
+                key="forecast_horizon",
             )
 
         # --- Baseline observed cumulative ---
@@ -1680,14 +1952,26 @@ if st.session_state["step"] == "forecast":
                     unsafe_allow_html=True)
         b1, b2, b3 = st.columns(3)
         with b1:
-            obs_conf = st.number_input("Confirmed", min_value=0,
-                                        value=base_conf_default, step=1)
+            obs_conf = st.number_input(
+                "Confirmed", min_value=0,
+                value=st.session_state.get("obs_conf_input",
+                                            base_conf_default),
+                step=1, key="obs_conf_input",
+            )
         with b2:
-            obs_susp = st.number_input("Suspected", min_value=0,
-                                        value=base_susp_default, step=1)
+            obs_susp = st.number_input(
+                "Suspected", min_value=0,
+                value=st.session_state.get("obs_susp_input",
+                                            base_susp_default),
+                step=1, key="obs_susp_input",
+            )
         with b3:
-            obs_death = st.number_input("Deaths", min_value=0,
-                                         value=base_death_default, step=1)
+            obs_death = st.number_input(
+                "Deaths", min_value=0,
+                value=st.session_state.get("obs_death_input",
+                                            base_death_default),
+                step=1, key="obs_death_input",
+            )
 
         # --- Disease parameters ---
         st.markdown('<div class="section-label">Disease parameters</div>',
@@ -2136,7 +2420,9 @@ if st.session_state["step"] == "rt":
 
         st.markdown('<div class="section-label">Sensitivity SI</div>',
                     unsafe_allow_html=True)
-        run_sens = st.checkbox("Overlay a sensitivity-analysis SI", value=True)
+        run_sens = st.checkbox("Overlay a sensitivity-analysis SI",
+                                value=st.session_state.get("run_sens", True),
+                                key="run_sens")
         sens_mean = param_with_source("Sensitivity SI mean (days)", 12.0,
                                        "si_mean_sens", 1.0, 60.0, 0.1,
                                        disabled=not run_sens)
@@ -2357,12 +2643,14 @@ with left:
         ["Single source for whole table", "Per-row sources"],
         horizontal=True,
         label_visibility="collapsed",
+        key="source_mode",
     )
     whole_table_source = ""
     if source_mode == "Single source for whole table":
         whole_table_source = st.text_input(
             "Source URL or DOI",
             placeholder="https://www.who.int/.../2026-DON605",
+            key="whole_table_source",
         )
 
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
@@ -2371,11 +2659,13 @@ with left:
         value_type = st.radio(
             "Values are",
             ["Cumulative", "Incidence (daily new)"],
+            key="value_type",
         )
     with c2:
         input_method = st.radio(
             "Input method",
             ["Manual entry", "CSV upload"],
+            key="input_method",
         )
 
     per_row_source = source_mode == "Per-row sources"
