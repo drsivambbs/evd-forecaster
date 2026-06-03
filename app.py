@@ -166,10 +166,12 @@ def build_excel_report() -> bytes:
     else:
         sections.append(("Step 3 — Forecast", "Pending", "—"))
 
-    if valid_plc and eoo_probs is not None:
+    # Step 4 status — "Built" whenever any EOO output exists in session_state,
+    # even if only one scenario had a valid projected last case.
+    if eoo_probs is not None and eoo_days is not None and len(eoo_probs) > 0:
         thr = ss.get("eoo_threshold", 0.95)
         cross = np.where(eoo_probs >= thr)[0]
-        if len(cross) > 0:
+        if valid_plc and len(cross) > 0:
             cross_day = int(eoo_days[cross[0]])
             lines = []
             for s_name, plc in valid_plc.items():
@@ -178,11 +180,17 @@ def build_excel_report() -> bytes:
                 lines.append(f"{lbl}: P≥{thr:.0%} on {d}")
             sections.append(("Step 4 — End of outbreak", "Built",
                               " · ".join(lines)))
+        elif valid_plc:
+            sections.append(("Step 4 — End of outbreak", "Built",
+                              f"P(extinct) does not reach {thr:.0%} within "
+                              f"{int(eoo_days[-1])} days"))
         else:
             sections.append(("Step 4 — End of outbreak", "Built",
-                              "Threshold not reached in horizon"))
+                              "Simulation ran; no scenario with valid "
+                              "projected last case"))
     else:
-        sections.append(("Step 4 — End of outbreak", "Pending", "—"))
+        sections.append(("Step 4 — End of outbreak", "Pending",
+                          "Run Step 4 (EOO simulation) to populate"))
 
     row += 1
     for sect, status, headline in sections:
@@ -378,17 +386,10 @@ def build_excel_report() -> bytes:
         _write_title_block(ws, "Step 1 — Daily incidence builder",
                             "From cumulative DON snapshots → daily series")
 
-        # Embed daily-new chart
-        try:
-            from app import daily_chart  # noqa
-        except Exception:
-            daily_chart = globals().get("daily_chart")
-        if daily_chart:
-            try:
-                fig = daily_chart(series)
-                _embed_png(ws, _try_fig_to_png(fig), "A4")
-            except Exception:
-                pass
+        # Embed daily-new chart (read directly from session_state)
+        _fig_daily = ss.get("chart_daily")
+        if _fig_daily is not None:
+            _embed_png(ws, _try_fig_to_png(_fig_daily), "A4")
 
         row_data_start = 30
         ws.cell(row=row_data_start - 1, column=1,
@@ -421,15 +422,11 @@ def build_excel_report() -> bytes:
         _write_title_block(ws, "Step 2 — R_t estimation",
                             f"Cori 2013 sliding-window, SI Gamma({ss.get('si_mean_primary_val', 15.3)}, {ss.get('si_sd_primary_val', 9.3)})")
 
-        # Embed combined R_t chart
-        rt_combined_chart_fn = globals().get("rt_combined_chart")
-        if rt_combined_chart_fn and series is not None:
-            try:
-                fig = rt_combined_chart_fn(series, rt_df, si_used)
-                _embed_png(ws, _try_fig_to_png(fig, width=1100, height=520),
-                            "A4")
-            except Exception:
-                pass
+        # Embed R_t chart (from session_state — set when Step 2 rendered)
+        _fig_rt = ss.get("chart_rt")
+        if _fig_rt is not None:
+            _embed_png(ws, _try_fig_to_png(_fig_rt, width=1100, height=520),
+                        "A4")
 
         # Headline R_t banner
         prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
@@ -486,27 +483,15 @@ def build_excel_report() -> bytes:
         _write_title_block(ws, "Step 3 — Renewal-equation forecast",
                             "Nouvellet 2018; 3 response scenarios with 90% PI bands")
 
-        # Embed forecast chart
-        forecast_chart_fn = globals().get("forecast_chart")
+        # Embed forecast chart (from session_state)
         scen_inputs_used = ss.get("fc_scen_inputs", {})
         scen_defaults = {"S1": {"label": "Delayed response"},
                           "S2": {"label": "Moderate response"},
                           "S3": {"label": "Strong combined"}}
-        scen_labels = {
-            name: (f"<b>{scen_defaults[name]['label']}</b> "
-                   f"(R_t → {scen_inputs_used.get(name, {}).get('target', 0):.1f} "
-                   f"over {scen_inputs_used.get(name, {}).get('days', 0)} d)")
-            for name in scenarios_out
-        }
-        baselines = ss.get("fc_baselines", {})
-        if forecast_chart_fn and baselines:
-            try:
-                fig = forecast_chart_fn(scenarios_out, horizon_dates,
-                                         baselines, scen_labels, y_log=True)
-                _embed_png(ws, _try_fig_to_png(fig, width=1200, height=520),
-                            "A4")
-            except Exception:
-                pass
+        _fig_forecast = ss.get("chart_forecast")
+        if _fig_forecast is not None:
+            _embed_png(ws, _try_fig_to_png(_fig_forecast, width=1200,
+                                            height=520), "A4")
 
         # Per-scenario headline metrics
         row = 32
@@ -610,16 +595,12 @@ def build_excel_report() -> bytes:
         _write_title_block(ws, "Step 4 — End-of-outbreak probability",
                             "Nishiura / Lloyd-Smith descendant-tree simulation")
 
-        # Embed EOO chart
-        eoo_chart_fn = globals().get("eoo_chart_multi")
+        # Embed EOO chart (from session_state)
         thr = ss.get("eoo_threshold", 0.95)
-        if eoo_chart_fn:
-            try:
-                fig = eoo_chart_fn(eoo_days, eoo_probs, valid_plc, thr)
-                _embed_png(ws, _try_fig_to_png(fig, width=1200, height=520),
-                            "A4")
-            except Exception:
-                pass
+        _fig_eoo = ss.get("chart_eoo")
+        if _fig_eoo is not None:
+            _embed_png(ws, _try_fig_to_png(_fig_eoo, width=1200, height=520),
+                        "A4")
 
         # Per-scenario declaration dates
         row = 32
@@ -2308,10 +2289,9 @@ if st.session_state["step"] == "eoo":
                 unsafe_allow_html=True,
             )
         else:
-            st.plotly_chart(
-                eoo_chart_multi(days_range, eoo_probs, valid_plc_used, thr),
-                use_container_width=True,
-            )
+            _fig_eoo = eoo_chart_multi(days_range, eoo_probs, valid_plc_used, thr)
+            st.session_state["chart_eoo"] = _fig_eoo
+            st.plotly_chart(_fig_eoo, use_container_width=True)
 
             # --- Per-scenario key dates summary ---
             cross_idx = np.where(eoo_probs >= thr)[0]
@@ -2721,8 +2701,9 @@ if st.session_state["step"] == "forecast":
         preview_traj = st.session_state.get("fc_preview_traj")
         preview_dates = st.session_state.get("fc_preview_dates")
         if preview_traj is not None and preview_dates is not None:
-            st.plotly_chart(rt_preview_chart(preview_traj, preview_dates),
-                            use_container_width=True)
+            _fig_preview = rt_preview_chart(preview_traj, preview_dates)
+            st.session_state["chart_rt_preview"] = _fig_preview
+            st.plotly_chart(_fig_preview, use_container_width=True)
 
         scenarios_out = st.session_state.get("fc_scenarios")
         horizon_dates = st.session_state.get("fc_dates")
@@ -2758,11 +2739,11 @@ if st.session_state["step"] == "forecast":
                     f"shaded band = 90% posterior predictive interval "
                     f"from {st.session_state.get('fc_n_samples', '?')} R_t draws."
                 )
-            st.plotly_chart(
-                forecast_chart(scenarios_out, horizon_dates, baselines,
-                               scen_labels, y_log=bool(y_log)),
-                use_container_width=True,
-            )
+            _fig_forecast = forecast_chart(scenarios_out, horizon_dates,
+                                            baselines, scen_labels,
+                                            y_log=bool(y_log))
+            st.session_state["chart_forecast"] = _fig_forecast
+            st.plotly_chart(_fig_forecast, use_container_width=True)
 
             # --- Summary cards: 180-day totals per scenario ---
             st.markdown(
@@ -3055,10 +3036,9 @@ if st.session_state["step"] == "rt":
                 unsafe_allow_html=True,
             )
         else:
-            st.plotly_chart(
-                rt_combined_chart(series_in, rt_df, rt_si),
-                use_container_width=True,
-            )
+            _fig_rt = rt_combined_chart(series_in, rt_df, rt_si)
+            st.session_state["chart_rt"] = _fig_rt
+            st.plotly_chart(_fig_rt, use_container_width=True)
 
             primary = rt_df[rt_df["si_mean_used"] == rt_si].dropna(
                 subset=["rt_mean"]).copy()
@@ -3398,10 +3378,13 @@ with right:
     else:
         tab1, tab2, tab3 = st.tabs(["Daily new", "Cumulative", "Table"])
         with tab1:
-            st.plotly_chart(daily_chart(series), use_container_width=True)
+            _fig_daily = daily_chart(series)
+            st.session_state["chart_daily"] = _fig_daily
+            st.plotly_chart(_fig_daily, use_container_width=True)
         with tab2:
-            st.plotly_chart(cumulative_chart(series, chart_snaps),
-                            use_container_width=True)
+            _fig_cum = cumulative_chart(series, chart_snaps)
+            st.session_state["chart_cumulative"] = _fig_cum
+            st.plotly_chart(_fig_cum, use_container_width=True)
         with tab3:
             display = series[TABLE_COLS].copy()
             display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d-%b-%Y")
