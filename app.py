@@ -15,209 +15,778 @@ def _slug(text: str) -> str:
     return s[:40].lower() or "scenario"
 
 
+def _try_fig_to_png(fig, width: int = 1100, height: int = 480):
+    """Convert a Plotly figure to PNG bytes. Returns None if kaleido is missing
+    or fails — the Excel report still generates without the image."""
+    try:
+        import plotly.io as pio
+        return pio.to_image(fig, format="png", width=width, height=height,
+                             scale=2)
+    except Exception:
+        return None
+
+
+def _apply_header_style(ws, row: int, cols: int, fill: str, font_color: str = "FFFFFF"):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    fill_obj = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
+    font_obj = Font(name="Calibri", size=11, bold=True, color=font_color)
+    align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    thin = Side(border_style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for c in range(1, cols + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.fill = fill_obj
+        cell.font = font_obj
+        cell.alignment = align
+        cell.border = border
+    ws.row_dimensions[row].height = 22
+
+
+def _write_title_block(ws, title: str, subtitle: str = ""):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws.cell(row=1, column=1, value=title).font = Font(
+        name="Calibri", size=18, bold=True, color="1F4E79")
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="left",
+                                                    vertical="center")
+    ws.row_dimensions[1].height = 30
+    if subtitle:
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+        ws.cell(row=2, column=1, value=subtitle).font = Font(
+            name="Calibri", size=11, italic=True, color="5B6573")
+    ws.row_dimensions[2].height = 18
+
+
+def _auto_size(ws, widths: dict):
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+
 def build_excel_report() -> bytes:
-    """Bundle every input + output currently in session_state into one .xlsx.
+    """Bundle every input + output currently in session_state into a polished
+    multi-sheet .xlsx with Cover, Inputs, per-step sheets (chart + data +
+    interpretation), and a final Interpretation sheet."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
 
-    Sheets: Dashboard, Inputs, Daily incidence, Rt estimates, Forecast, EOO probability.
-    Missing data is gracefully skipped — the user can export at any pipeline stage.
-    """
     ss = st.session_state
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    scenario_name = ss.get("scenario_name", "EVD Forecaster run")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # ---------- Dashboard sheet ----------
-        dashboard_rows = [
-            ("Scenario name", ss.get("scenario_name", "")),
-            ("Report generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
-            ("", ""),
-        ]
-        series = ss.get("result_series")
-        if series is not None and len(series):
-            sd = pd.to_datetime(series["date"]).min().strftime("%d-%b-%Y")
-            ed = pd.to_datetime(series["date"]).max().strftime("%d-%b-%Y")
-            dashboard_rows += [
-                ("STEP 1 — DAILY INCIDENCE", ""),
-                ("Date range", f"{sd} → {ed}"),
-                ("Days produced", len(series)),
-                ("Total new confirmed (sum)",
-                 float(series["new_confirmed"].sum())),
-                ("Total new suspected (sum)",
-                 float(series["new_suspected"].sum())),
-                ("Total new deaths (sum)",
-                 float(series["new_deaths"].sum())),
-                ("", ""),
-            ]
-        rt_df = ss.get("rt_df")
-        si_used = float(ss.get("si_mean_primary_val", 15.3))
-        if rt_df is not None and not rt_df.empty:
-            prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
-            if not prim.empty:
-                latest = prim.iloc[-1]
-                dashboard_rows += [
-                    ("STEP 2 — R_t ESTIMATION", ""),
-                    ("Latest R_t mean", round(float(latest["rt_mean"]), 3)),
-                    ("Latest R_t 95% CrI lower",
-                     round(float(latest["rt_lower"]), 3)),
-                    ("Latest R_t 95% CrI upper",
-                     round(float(latest["rt_upper"]), 3)),
-                    ("Posterior Gamma shape",
-                     round(float(latest.get("shape_post", float("nan"))), 3)),
-                    ("Posterior Gamma rate",
-                     round(float(latest.get("rate_post", float("nan"))), 3)),
-                    ("R_t selected for forecast",
-                     round(float(ss.get("selected_rt", float("nan"))), 3)),
-                    ("R_t basis", ss.get("selected_rt_basis", "")),
-                    ("", ""),
-                ]
-        scenarios_out = ss.get("fc_scenarios")
-        horizon_dates = ss.get("fc_dates")
-        if scenarios_out and horizon_dates is not None:
-            dashboard_rows += [("STEP 3 — FORECAST (per scenario)", "")]
-            scen_lbl = {"S1": "Delayed response", "S2": "Moderate response",
-                         "S3": "Strong combined response"}
-            for name, data in scenarios_out.items():
-                def _med(metric):
-                    v = data[metric]
-                    return v["median"] if isinstance(v, dict) else v
-                med_conf = _med("cum_confirmed")
-                med_death = _med("cum_deaths")
-                med_new_conf = _med("new_confirmed")
-                peak_idx = int(np.argmax(med_new_conf))
-                dashboard_rows += [
-                    (f"  {scen_lbl.get(name, name)} — final cumulative confirmed (median)",
-                     round(float(med_conf[-1]), 0)),
-                    (f"  {scen_lbl.get(name, name)} — final cumulative deaths (median)",
-                     round(float(med_death[-1]), 0)),
-                    (f"  {scen_lbl.get(name, name)} — peak new confirmed",
-                     round(float(med_new_conf[peak_idx]), 1)),
-                    (f"  {scen_lbl.get(name, name)} — peak day",
-                     horizon_dates[peak_idx].strftime("%d-%b-%Y")),
-                ]
-            dashboard_rows += [("", "")]
-        valid_plc = ss.get("eoo_valid_plc")
-        eoo_probs = ss.get("eoo_probs")
-        eoo_days = ss.get("eoo_days")
+    brand = "1F4E79"
+    brand_light = "DDE7F0"
+    grey_band = "F1F4F8"
+    accent_orange = "E07B39"
+
+    NAVY = Font(name="Calibri", size=11, bold=True, color=brand)
+    H2 = Font(name="Calibri", size=14, bold=True, color=brand)
+    SMALL_GREY = Font(name="Calibri", size=9, color="5B6573")
+    BOLD = Font(name="Calibri", size=11, bold=True)
+    fill_brand = PatternFill(start_color=brand, end_color=brand, fill_type="solid")
+    fill_brand_light = PatternFill(start_color=brand_light,
+                                    end_color=brand_light, fill_type="solid")
+    fill_grey = PatternFill(start_color=grey_band, end_color=grey_band,
+                             fill_type="solid")
+    thin = Side(border_style="thin", color="CCCCCC")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    WRAP = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    wb = Workbook()
+
+    # =====================================================================
+    # SHEET 1 — Cover / Summary
+    # =====================================================================
+    ws = wb.active
+    ws.title = "Cover"
+    _write_title_block(ws, f"EVD Forecaster — {scenario_name}",
+                        f"Generated {now}")
+
+    row = 4
+    ws.cell(row=row, column=1, value="Section").fill = fill_brand
+    ws.cell(row=row, column=1).font = Font(name="Calibri", size=11, bold=True,
+                                            color="FFFFFF")
+    ws.cell(row=row, column=2, value="Status").fill = fill_brand
+    ws.cell(row=row, column=2).font = Font(name="Calibri", size=11, bold=True,
+                                            color="FFFFFF")
+    ws.cell(row=row, column=3, value="Headline").fill = fill_brand
+    ws.cell(row=row, column=3).font = Font(name="Calibri", size=11, bold=True,
+                                            color="FFFFFF")
+    for c in range(1, 4):
+        ws.cell(row=row, column=c).alignment = LEFT
+        ws.cell(row=row, column=c).border = BORDER
+    ws.row_dimensions[row].height = 22
+
+    series = ss.get("result_series")
+    rt_df = ss.get("rt_df")
+    scenarios_out = ss.get("fc_scenarios")
+    horizon_dates = ss.get("fc_dates")
+    eoo_probs = ss.get("eoo_probs")
+    eoo_days = ss.get("eoo_days")
+    valid_plc = ss.get("eoo_valid_plc")
+    si_used = float(ss.get("si_mean_primary_val", 15.3))
+
+    sections = []
+    sections.append((
+        "Step 1 — Daily incidence",
+        "Built" if series is not None and len(series) > 0 else "Pending",
+        (f"{len(series)} days of incidence ({pd.to_datetime(series['date']).min():%d-%b-%Y} → "
+         f"{pd.to_datetime(series['date']).max():%d-%b-%Y})"
+         if series is not None and len(series) > 0 else "—")
+    ))
+    if rt_df is not None and not rt_df.empty:
+        prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
+        if not prim.empty:
+            latest = prim.iloc[-1]
+            mean_rt = float(latest["rt_mean"])
+            direction = "growing" if mean_rt > 1 else "declining"
+            sections.append((
+                "Step 2 — R_t estimation",
+                "Built",
+                f"Latest R_t = {mean_rt:.2f} (95% CrI {float(latest['rt_lower']):.2f}–{float(latest['rt_upper']):.2f}) → outbreak {direction}"
+            ))
+        else:
+            sections.append(("Step 2 — R_t estimation", "Built",
+                              "Estimates computed"))
+    else:
+        sections.append(("Step 2 — R_t estimation", "Pending", "—"))
+
+    if scenarios_out and horizon_dates is not None:
+        scen_lbl = {"S1": "Delayed", "S2": "Moderate", "S3": "Strong"}
+        lines = []
+        for name, data in scenarios_out.items():
+            v = data["cum_confirmed"]
+            med = v["median"] if isinstance(v, dict) else v
+            lines.append(f"{scen_lbl.get(name, name)}: {float(med[-1]):,.0f} cumulative confirmed")
+        sections.append(("Step 3 — Forecast", "Built", " · ".join(lines)))
+    else:
+        sections.append(("Step 3 — Forecast", "Pending", "—"))
+
+    if valid_plc and eoo_probs is not None:
         thr = ss.get("eoo_threshold", 0.95)
-        if valid_plc and eoo_probs is not None:
-            dashboard_rows += [("STEP 4 — END OF OUTBREAK", "")]
-            cross = np.where(eoo_probs >= thr)[0]
-            cross_day = int(eoo_days[cross[0]]) if len(cross) > 0 else None
+        cross = np.where(eoo_probs >= thr)[0]
+        if len(cross) > 0:
+            cross_day = int(eoo_days[cross[0]])
+            lines = []
             for s_name, plc in valid_plc.items():
-                lbl = {"S1": "Delayed", "S2": "Moderate",
-                       "S3": "Strong combined"}.get(s_name, s_name)
-                dashboard_rows += [
-                    (f"  {lbl} — projected last case",
-                     plc.strftime("%d-%b-%Y")),
-                    (f"  {lbl} — WHO 42-day EOO declaration",
-                     (plc + pd.Timedelta(days=42)).strftime("%d-%b-%Y")),
-                    (f"  {lbl} — Djaafara 63-day preliminary",
-                     (plc + pd.Timedelta(days=63)).strftime("%d-%b-%Y")),
-                    (f"  {lbl} — Djaafara final (63 + 90 d)",
-                     (plc + pd.Timedelta(days=153)).strftime("%d-%b-%Y")),
-                ]
-                if cross_day is not None:
-                    dashboard_rows += [
-                        (f"  {lbl} — P(extinct) ≥ {thr:.0%} on",
-                         (plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")),
-                    ]
-        pd.DataFrame(dashboard_rows, columns=["Metric", "Value"]).to_excel(
-            writer, sheet_name="Dashboard", index=False)
+                lbl = {"S1": "Delayed", "S2": "Moderate", "S3": "Strong"}.get(s_name, s_name)
+                d = (plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+                lines.append(f"{lbl}: P≥{thr:.0%} on {d}")
+            sections.append(("Step 4 — End of outbreak", "Built",
+                              " · ".join(lines)))
+        else:
+            sections.append(("Step 4 — End of outbreak", "Built",
+                              "Threshold not reached in horizon"))
+    else:
+        sections.append(("Step 4 — End of outbreak", "Pending", "—"))
 
-        # ---------- Inputs sheet ----------
-        input_rows = []
-        for label, key, default, src_key in [
-            ("Scenario name", "scenario_name", "", None),
-            ("SI mean primary (days)", "si_mean_primary_val", 15.3,
-             "si_mean_primary_src"),
-            ("SI SD primary (days)", "si_sd_primary_val", 9.3,
-             "si_sd_primary_src"),
-            ("Sensitivity SI mean (days)", "si_mean_sens_val", 12.0,
-             "si_mean_sens_src"),
-            ("Sensitivity SI SD (days)", "si_sd_sens_val", 5.0,
-             "si_sd_sens_src"),
-            ("R_t window (days)", "window_val", 7, "window_src"),
-            ("R_t prior shape", "shape_prior_val", 1.0, "shape_prior_src"),
-            ("R_t prior rate", "rate_prior_val", 0.2, "rate_prior_src"),
-            ("R_t selected for forecast", "selected_rt", None, None),
-            ("R_t selection basis", "selected_rt_basis", None, None),
-            ("CFR", "cfr_val", 0.34, "cfr_src"),
-            ("Onset-to-death lag (days)", "lag_val", 10, "lag_src"),
-            ("Forecast horizon (days)", "forecast_horizon", None, None),
-            ("Forecast start date", "forecast_start_date", None, None),
-            ("S1 target R_t", "S1_target", 1.0, None),
-            ("S1 days to target", "S1_days", 60, None),
-            ("S2 target R_t", "S2_target", 1.0, None),
-            ("S2 days to target", "S2_days", 30, None),
-            ("S3 target R_t", "S3_target", 0.6, None),
-            ("S3 days to target", "S3_days", 30, None),
-            ("EOO simulations", "eoo_n_sim", None, None),
-            ("EOO days range", "eoo_max_days", None, None),
-            ("EOO declaration threshold", "eoo_threshold", 0.95, None),
-            ("EOO offspring dispersion k", "eoo_k_disp", 0.18, None),
-        ]:
-            val = ss.get(key, default)
-            src = ss.get(src_key) if src_key else ""
-            if val is not None:
-                input_rows.append({"Input": label, "Value": val,
-                                    "Source / DOI": src or ""})
-        pd.DataFrame(input_rows).to_excel(writer, sheet_name="Inputs",
-                                            index=False)
+    row += 1
+    for sect, status, headline in sections:
+        ws.cell(row=row, column=1, value=sect).font = BOLD
+        ws.cell(row=row, column=2, value=status)
+        if status == "Built":
+            ws.cell(row=row, column=2).font = Font(
+                name="Calibri", size=11, bold=True, color="1E8449")
+        else:
+            ws.cell(row=row, column=2).font = Font(
+                name="Calibri", size=11, italic=True, color="B22222")
+        ws.cell(row=row, column=3, value=headline)
+        for c in range(1, 4):
+            ws.cell(row=row, column=c).alignment = WRAP
+            ws.cell(row=row, column=c).border = BORDER
+            ws.cell(row=row, column=c).fill = (
+                fill_brand_light if row % 2 == 0 else fill_grey)
+        ws.row_dimensions[row].height = 32
+        row += 1
 
-        # ---------- Daily incidence sheet ----------
-        if series is not None and len(series):
-            di = series.copy()
-            di["date"] = pd.to_datetime(di["date"]).dt.strftime("%Y-%m-%d")
-            di.to_excel(writer, sheet_name="Daily incidence", index=False)
+    # Sources / methods reference
+    row += 2
+    ws.cell(row=row, column=1, value="Methods & references").font = H2
+    row += 1
+    refs = [
+        ("Cori et al. 2013", "Am J Epidemiol 178:1505",
+         "https://doi.org/10.1093/aje/kwt133"),
+        ("Nouvellet et al. 2018", "Epidemics 22:3",
+         "https://doi.org/10.1016/j.epidem.2017.02.012"),
+        ("WHO Ebola Response Team 2014", "N Engl J Med 371:1481",
+         "https://doi.org/10.1056/NEJMoa1411100"),
+        ("Lloyd-Smith et al. 2005", "Nature 438:355",
+         "https://doi.org/10.1038/nature04153"),
+        ("Wamala et al. 2010", "Emerg Infect Dis 16:1087",
+         "https://doi.org/10.3201/eid1607.090536"),
+        ("Legrand et al. 2007", "Epidemiol Infect 135:610",
+         "https://doi.org/10.1017/S0950268806007217"),
+    ]
+    for citation, journal, doi in refs:
+        ws.cell(row=row, column=1, value=citation).font = BOLD
+        ws.cell(row=row, column=2, value=journal)
+        ws.cell(row=row, column=3, value=doi).hyperlink = doi
+        ws.cell(row=row, column=3).font = Font(name="Calibri", size=11,
+                                                color=brand, underline="single")
+        row += 1
 
-        # ---------- R_t estimates sheet ----------
-        if rt_df is not None and not rt_df.empty:
-            rt_out = rt_df.copy()
-            rt_out["date"] = pd.to_datetime(rt_out["date"]).dt.strftime("%Y-%m-%d")
-            rt_out.to_excel(writer, sheet_name="Rt estimates", index=False)
+    _auto_size(ws, {"A": 28, "B": 14, "C": 78})
 
-        # ---------- Forecast sheet ----------
-        if scenarios_out and horizon_dates is not None:
-            rows = []
-            for name, data in scenarios_out.items():
-                for i, d in enumerate(horizon_dates):
-                    def _v(metric, key):
-                        v = data[metric]
-                        return float(v[key][i]) if isinstance(v, dict) else float(v[i])
-                    rows.append({
-                        "date": d.strftime("%Y-%m-%d"),
-                        "scenario": name,
-                        "new_confirmed_median": _v("new_confirmed", "median"),
-                        "new_confirmed_lower":  _v("new_confirmed", "lower"),
-                        "new_confirmed_upper":  _v("new_confirmed", "upper"),
-                        "new_suspected_median": _v("new_suspected", "median"),
-                        "new_deaths_median":    _v("new_deaths", "median"),
-                        "cumulative_confirmed_median": _v("cum_confirmed", "median"),
-                        "cumulative_confirmed_lower":  _v("cum_confirmed", "lower"),
-                        "cumulative_confirmed_upper":  _v("cum_confirmed", "upper"),
-                        "cumulative_suspected_median": _v("cum_suspected", "median"),
-                        "cumulative_deaths_median":    _v("cum_deaths", "median"),
-                        "cumulative_deaths_lower":     _v("cum_deaths", "lower"),
-                        "cumulative_deaths_upper":     _v("cum_deaths", "upper"),
-                    })
-            pd.DataFrame(rows).to_excel(writer, sheet_name="Forecast",
-                                          index=False)
+    # =====================================================================
+    # SHEET 2 — Inputs
+    # =====================================================================
+    ws = wb.create_sheet("Inputs")
+    _write_title_block(ws, "Inputs", "Every parameter value with its source")
 
-        # ---------- EOO probability sheet ----------
-        if valid_plc and eoo_probs is not None and eoo_days is not None:
-            rows = []
-            for s_name, plc in valid_plc.items():
-                for i, d in enumerate(eoo_days):
-                    rows.append({
-                        "scenario": s_name,
-                        "days_after_last_case": int(d),
-                        "projected_date":
-                            (plc + pd.Timedelta(days=int(d))).strftime("%Y-%m-%d"),
-                        "eoo_probability": round(float(eoo_probs[i]), 4),
-                        "who_42day_met": int(d) >= 42,
-                        "djaafara_63day_met": int(d) >= 63,
-                    })
-            pd.DataFrame(rows).to_excel(writer, sheet_name="EOO probability",
-                                          index=False)
+    row = 4
+    headers = ["Parameter", "Value", "Source / DOI"]
+    for i, h in enumerate(headers, start=1):
+        cell = ws.cell(row=row, column=i, value=h)
+        cell.fill = fill_brand
+        cell.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        cell.alignment = LEFT
+        cell.border = BORDER
+    ws.row_dimensions[row].height = 22
+
+    INPUT_ROWS = [
+        ("Step 1 — Data", None, None, None, None),
+        ("Scenario name", ss.get("scenario_name", ""), None, "string", None),
+        ("Step 2 — R_t estimation", None, None, None, None),
+        ("SI mean primary (days)", 15.3, "si_mean_primary_val", "float",
+         "si_mean_primary_src"),
+        ("SI SD primary (days)", 9.3, "si_sd_primary_val", "float",
+         "si_sd_primary_src"),
+        ("Sensitivity SI mean (days)", 12.0, "si_mean_sens_val", "float",
+         "si_mean_sens_src"),
+        ("Sensitivity SI SD (days)", 5.0, "si_sd_sens_val", "float",
+         "si_sd_sens_src"),
+        ("Sliding window (days)", 7, "window_val", "int", "window_src"),
+        ("Prior shape", 1.0, "shape_prior_val", "float", "shape_prior_src"),
+        ("Prior rate", 0.2, "rate_prior_val", "float", "rate_prior_src"),
+        ("R_t selected for forecast", None, "selected_rt", "float", None),
+        ("R_t basis", "", "selected_rt_basis", "string", None),
+        ("Step 3 — Forecast", None, None, None, None),
+        ("CFR", 0.34, "cfr_val", "float", "cfr_src"),
+        ("Onset-to-death lag (days)", 10, "lag_val", "int", "lag_src"),
+        ("Forecast horizon (days)", 180, "forecast_horizon", "int", None),
+        ("Forecast start date", "", "forecast_start_date", "string", None),
+        ("S1 target R_t", 1.0, "S1_target", "float", None),
+        ("S1 days to target", 60, "S1_days", "int", None),
+        ("S2 target R_t", 1.0, "S2_target", "float", None),
+        ("S2 days to target", 30, "S2_days", "int", None),
+        ("S3 target R_t", 0.6, "S3_target", "float", None),
+        ("S3 days to target", 30, "S3_days", "int", None),
+        ("Step 4 — End of outbreak", None, None, None, None),
+        ("EOO simulations", 1000, "eoo_n_sim", "int", None),
+        ("EOO days range", 180, "eoo_max_days", "int", None),
+        ("EOO declaration threshold", 0.95, "eoo_threshold", "float", None),
+        ("EOO offspring dispersion k", 0.18, "eoo_k_disp", "float", None),
+    ]
+    row += 1
+    for label, default, key, kind, src_key in INPUT_ROWS:
+        if kind is None:
+            ws.cell(row=row, column=1, value=label).font = Font(
+                name="Calibri", size=11, bold=True, color=brand)
+            for c in range(1, 4):
+                ws.cell(row=row, column=c).fill = fill_brand_light
+                ws.cell(row=row, column=c).border = BORDER
+            ws.row_dimensions[row].height = 20
+            row += 1
+            continue
+        val = ss.get(key, default) if key else default
+        src = ss.get(src_key, "") if src_key else ""
+        if val is None:
+            val = ""
+        ws.cell(row=row, column=1, value=label).font = Font(name="Calibri",
+                                                              size=11)
+        ws.cell(row=row, column=2, value=val).alignment = LEFT
+        ws.cell(row=row, column=3, value=src).alignment = LEFT
+        if src:
+            ws.cell(row=row, column=3).hyperlink = src
+            ws.cell(row=row, column=3).font = Font(name="Calibri", size=10,
+                                                    color=brand,
+                                                    underline="single")
+        for c in range(1, 4):
+            ws.cell(row=row, column=c).border = BORDER
+        row += 1
+    _auto_size(ws, {"A": 36, "B": 22, "C": 60})
+
+    # =====================================================================
+    # Helper: append a data table from a pandas DataFrame onto a sheet
+    # =====================================================================
+    def _append_table(ws, df, start_row: int, header_fill: str = brand):
+        for j, col in enumerate(df.columns, start=1):
+            cell = ws.cell(row=start_row, column=j, value=str(col))
+            cell.fill = PatternFill(start_color=header_fill,
+                                     end_color=header_fill, fill_type="solid")
+            cell.font = Font(name="Calibri", size=10, bold=True,
+                              color="FFFFFF")
+            cell.alignment = LEFT
+            cell.border = BORDER
+        ws.row_dimensions[start_row].height = 20
+        r = start_row + 1
+        for _, row_data in df.iterrows():
+            for j, col in enumerate(df.columns, start=1):
+                v = row_data[col]
+                if isinstance(v, (np.floating, float)):
+                    cell = ws.cell(row=r, column=j, value=float(v))
+                    cell.number_format = "#,##0.00"
+                elif isinstance(v, (np.integer, int)):
+                    cell = ws.cell(row=r, column=j, value=int(v))
+                    cell.number_format = "#,##0"
+                else:
+                    cell = ws.cell(row=r, column=j, value=str(v))
+                cell.border = BORDER
+                cell.alignment = LEFT
+                if (r - start_row) % 2 == 0:
+                    cell.fill = fill_grey
+            r += 1
+        return r
+
+    def _embed_png(ws, png_bytes, anchor: str, w_px: int = 880):
+        if png_bytes is None:
+            return
+        try:
+            img = XLImage(BytesIO(png_bytes))
+            img.width = w_px
+            img.height = int(w_px * 0.44)
+            ws.add_image(img, anchor)
+        except Exception:
+            pass
+
+    def _interpretation_block(ws, row: int, text: str):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+        c = ws.cell(row=row, column=1, value="Interpretation")
+        c.font = Font(name="Calibri", size=11, bold=True, color=brand)
+        c.fill = fill_brand_light
+        c.alignment = LEFT
+        ws.row_dimensions[row].height = 20
+        row += 1
+        ws.merge_cells(start_row=row, start_column=1, end_row=row,
+                       end_column=10)
+        c = ws.cell(row=row, column=1, value=text)
+        c.font = Font(name="Calibri", size=11)
+        c.alignment = WRAP
+        c.fill = fill_grey
+        ws.row_dimensions[row].height = 60
+        return row + 2
+
+    # =====================================================================
+    # SHEET 3 — Step 1: Daily incidence
+    # =====================================================================
+    if series is not None and len(series) > 0:
+        ws = wb.create_sheet("Step 1 — Daily incidence")
+        _write_title_block(ws, "Step 1 — Daily incidence builder",
+                            "From cumulative DON snapshots → daily series")
+
+        # Embed daily-new chart
+        try:
+            from app import daily_chart  # noqa
+        except Exception:
+            daily_chart = globals().get("daily_chart")
+        if daily_chart:
+            try:
+                fig = daily_chart(series)
+                _embed_png(ws, _try_fig_to_png(fig), "A4")
+            except Exception:
+                pass
+
+        row_data_start = 30
+        ws.cell(row=row_data_start - 1, column=1,
+                 value="Daily incidence — model-ready table").font = H2
+        di = series.copy()
+        di["date"] = pd.to_datetime(di["date"]).dt.strftime("%Y-%m-%d")
+        end_row = _append_table(ws, di, row_data_start)
+
+        interp_text = (
+            f"The daily incidence series spans {len(series)} days. "
+            f"Total new confirmed cases: {float(series['new_confirmed'].sum()):,.0f}. "
+            f"Total suspected: {float(series['new_suspected'].sum()):,.0f}. "
+            f"Total deaths: {float(series['new_deaths'].sum()):,.0f}. "
+            "Daily counts between cumulative snapshots are linearly interpolated and "
+            "first-differenced; small non-integer values are an artefact of "
+            "interpolation, not observed data."
+        )
+        _interpretation_block(ws, end_row + 1, interp_text)
+
+        # Column widths
+        for col_letter, w in {"A": 14, "B": 18, "C": 18, "D": 18, "E": 26,
+                                "F": 22, "G": 22, "H": 22, "I": 40}.items():
+            ws.column_dimensions[col_letter].width = w
+
+    # =====================================================================
+    # SHEET 4 — Step 2: R_t estimation
+    # =====================================================================
+    if rt_df is not None and not rt_df.empty:
+        ws = wb.create_sheet("Step 2 — R_t")
+        _write_title_block(ws, "Step 2 — R_t estimation",
+                            f"Cori 2013 sliding-window, SI Gamma({ss.get('si_mean_primary_val', 15.3)}, {ss.get('si_sd_primary_val', 9.3)})")
+
+        # Embed combined R_t chart
+        rt_combined_chart_fn = globals().get("rt_combined_chart")
+        if rt_combined_chart_fn and series is not None:
+            try:
+                fig = rt_combined_chart_fn(series, rt_df, si_used)
+                _embed_png(ws, _try_fig_to_png(fig, width=1100, height=520),
+                            "A4")
+            except Exception:
+                pass
+
+        # Headline R_t banner
+        prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
+        if not prim.empty:
+            latest = prim.iloc[-1]
+            mean_rt = float(latest["rt_mean"])
+            direction = "growing" if mean_rt > 1 else "declining"
+            colour = "B22222" if mean_rt > 1 else "1E8449"
+            ws.cell(row=30, column=1,
+                     value=f"Latest R_t = {mean_rt:.2f}  (95% CrI {float(latest['rt_lower']):.2f}–{float(latest['rt_upper']):.2f}) — {direction}")
+            ws.cell(row=30, column=1).font = Font(name="Calibri", size=13,
+                                                    bold=True, color=colour)
+
+        row_data_start = 33
+        ws.cell(row=row_data_start - 1, column=1,
+                 value="R_t estimates — full table").font = H2
+        rt_out = rt_df.copy()
+        rt_out["date"] = pd.to_datetime(rt_out["date"]).dt.strftime("%Y-%m-%d")
+        for c in ["rt_mean", "rt_lower", "rt_upper", "shape_post", "rate_post"]:
+            if c in rt_out.columns:
+                rt_out[c] = rt_out[c].round(3)
+        end_row = _append_table(ws, rt_out, row_data_start)
+
+        interp_lines = []
+        if not prim.empty:
+            interp_lines.append(
+                f"The most recent R_t estimate is {mean_rt:.2f} (95% CrI {float(latest['rt_lower']):.2f}–{float(latest['rt_upper']):.2f})."
+            )
+            if mean_rt > 1:
+                interp_lines.append(
+                    "R_t > 1 indicates the outbreak is in a growth phase — each case "
+                    "is, on average, generating more than one secondary case."
+                )
+            else:
+                interp_lines.append(
+                    "R_t < 1 indicates the outbreak is declining — each case is generating "
+                    "fewer than one secondary case on average."
+                )
+        interp_lines.append(
+            f"R_t selected for forecast: {float(ss.get('selected_rt', float('nan'))):.2f} "
+            f"(basis: {ss.get('selected_rt_basis', 'Latest')})."
+        )
+        _interpretation_block(ws, end_row + 1, " ".join(interp_lines))
+
+        for col_letter, w in {"A": 14, "B": 14, "C": 14, "D": 14, "E": 18,
+                                "F": 18, "G": 18, "H": 14, "I": 16}.items():
+            ws.column_dimensions[col_letter].width = w
+
+    # =====================================================================
+    # SHEET 5 — Step 3: Forecast
+    # =====================================================================
+    if scenarios_out and horizon_dates is not None:
+        ws = wb.create_sheet("Step 3 — Forecast")
+        _write_title_block(ws, "Step 3 — Renewal-equation forecast",
+                            "Nouvellet 2018; 3 response scenarios with 90% PI bands")
+
+        # Embed forecast chart
+        forecast_chart_fn = globals().get("forecast_chart")
+        scen_inputs_used = ss.get("fc_scen_inputs", {})
+        scen_defaults = {"S1": {"label": "Delayed response"},
+                          "S2": {"label": "Moderate response"},
+                          "S3": {"label": "Strong combined"}}
+        scen_labels = {
+            name: (f"<b>{scen_defaults[name]['label']}</b> "
+                   f"(R_t → {scen_inputs_used.get(name, {}).get('target', 0):.1f} "
+                   f"over {scen_inputs_used.get(name, {}).get('days', 0)} d)")
+            for name in scenarios_out
+        }
+        baselines = ss.get("fc_baselines", {})
+        if forecast_chart_fn and baselines:
+            try:
+                fig = forecast_chart_fn(scenarios_out, horizon_dates,
+                                         baselines, scen_labels, y_log=True)
+                _embed_png(ws, _try_fig_to_png(fig, width=1200, height=520),
+                            "A4")
+            except Exception:
+                pass
+
+        # Per-scenario headline metrics
+        row = 32
+        ws.cell(row=row, column=1, value="Per-scenario outcomes").font = H2
+        row += 1
+        for col_i, h in enumerate(
+            ["Scenario", "Final confirmed (median)",
+             "Final confirmed (90% PI)", "Final deaths (median)",
+             "Peak new confirmed", "Peak day"], start=1):
+            cell = ws.cell(row=row, column=col_i, value=h)
+            cell.fill = fill_brand
+            cell.font = Font(name="Calibri", size=10, bold=True,
+                              color="FFFFFF")
+            cell.alignment = LEFT
+            cell.border = BORDER
+        row += 1
+        for name, data in scenarios_out.items():
+            def _m(metric):
+                v = data[metric]
+                return v["median"] if isinstance(v, dict) else v
+            def _lo(metric):
+                v = data[metric]
+                return v["lower"] if isinstance(v, dict) else v
+            def _hi(metric):
+                v = data[metric]
+                return v["upper"] if isinstance(v, dict) else v
+            med_conf = _m("cum_confirmed")
+            med_death = _m("cum_deaths")
+            med_new = _m("new_confirmed")
+            peak_idx = int(np.argmax(med_new))
+            cells = [
+                scen_defaults[name]["label"],
+                float(med_conf[-1]),
+                f"{float(_lo('cum_confirmed')[-1]):,.0f} – {float(_hi('cum_confirmed')[-1]):,.0f}",
+                float(med_death[-1]),
+                float(med_new[peak_idx]),
+                horizon_dates[peak_idx].strftime("%d-%b-%Y"),
+            ]
+            for col_i, v in enumerate(cells, start=1):
+                cell = ws.cell(row=row, column=col_i, value=v)
+                if isinstance(v, float):
+                    cell.number_format = "#,##0"
+                cell.border = BORDER
+                cell.alignment = LEFT
+                cell.fill = fill_grey if row % 2 == 0 else fill_brand_light
+            ws.row_dimensions[row].height = 20
+            row += 1
+
+        # Forecast table
+        row += 2
+        ws.cell(row=row, column=1,
+                 value="Forecast table — median + 90% PI").font = H2
+        row += 1
+        rows = []
+        for name, data in scenarios_out.items():
+            for i, d in enumerate(horizon_dates):
+                def _v(metric, key):
+                    v = data[metric]
+                    return (float(v[key][i]) if isinstance(v, dict)
+                            else float(v[i]))
+                rows.append({
+                    "date": d.strftime("%Y-%m-%d"),
+                    "scenario": scen_defaults[name]["label"],
+                    "new_confirmed_med": round(_v("new_confirmed", "median"), 1),
+                    "cum_confirmed_med": round(_v("cum_confirmed", "median"), 0),
+                    "cum_confirmed_lo": round(_v("cum_confirmed", "lower"), 0),
+                    "cum_confirmed_hi": round(_v("cum_confirmed", "upper"), 0),
+                    "cum_deaths_med": round(_v("cum_deaths", "median"), 0),
+                    "cum_deaths_lo": round(_v("cum_deaths", "lower"), 0),
+                    "cum_deaths_hi": round(_v("cum_deaths", "upper"), 0),
+                })
+        fc_df = pd.DataFrame(rows)
+        end_row = _append_table(ws, fc_df, row)
+
+        # Interpretation
+        interp = []
+        for name, data in scenarios_out.items():
+            med = _m("cum_confirmed") if False else (
+                data["cum_confirmed"]["median"]
+                if isinstance(data["cum_confirmed"], dict)
+                else data["cum_confirmed"])
+            interp.append(
+                f"{scen_defaults[name]['label']}: cumulative confirmed reaches "
+                f"{float(med[-1]):,.0f} by horizon end."
+            )
+        interp.append(
+            "Shaded bands on the chart show 90% posterior predictive intervals "
+            "derived by sampling R_t starting values from the Cori Gamma posterior."
+        )
+        _interpretation_block(ws, end_row + 1, " ".join(interp))
+
+        for col_letter, w in {"A": 14, "B": 26, "C": 22, "D": 22, "E": 18,
+                                "F": 16, "G": 18}.items():
+            ws.column_dimensions[col_letter].width = w
+
+    # =====================================================================
+    # SHEET 6 — Step 4: End-of-outbreak
+    # =====================================================================
+    if valid_plc and eoo_probs is not None and eoo_days is not None:
+        ws = wb.create_sheet("Step 4 — End of outbreak")
+        _write_title_block(ws, "Step 4 — End-of-outbreak probability",
+                            "Nishiura / Lloyd-Smith descendant-tree simulation")
+
+        # Embed EOO chart
+        eoo_chart_fn = globals().get("eoo_chart_multi")
+        thr = ss.get("eoo_threshold", 0.95)
+        if eoo_chart_fn:
+            try:
+                fig = eoo_chart_fn(eoo_days, eoo_probs, valid_plc, thr)
+                _embed_png(ws, _try_fig_to_png(fig, width=1200, height=520),
+                            "A4")
+            except Exception:
+                pass
+
+        # Per-scenario declaration dates
+        row = 32
+        ws.cell(row=row, column=1,
+                 value="Per-scenario declaration dates").font = H2
+        row += 1
+        for col_i, h in enumerate(
+            ["Scenario", "Projected last case", "WHO 42-day",
+             "Djaafara 63-day", "Djaafara final (+90 d)",
+             f"P(extinct) ≥ {int(thr * 100)}%"], start=1):
+            cell = ws.cell(row=row, column=col_i, value=h)
+            cell.fill = fill_brand
+            cell.font = Font(name="Calibri", size=10, bold=True,
+                              color="FFFFFF")
+            cell.alignment = LEFT
+            cell.border = BORDER
+        row += 1
+
+        cross = np.where(eoo_probs >= thr)[0]
+        cross_day = int(eoo_days[cross[0]]) if len(cross) > 0 else None
+        scen_lbl = {"S1": "Delayed response", "S2": "Moderate response",
+                     "S3": "Strong combined"}
+        for s_name, plc in valid_plc.items():
+            cross_date = ((plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+                           if cross_day is not None else "not reached")
+            cells = [
+                scen_lbl.get(s_name, s_name),
+                plc.strftime("%d-%b-%Y"),
+                (plc + pd.Timedelta(days=42)).strftime("%d-%b-%Y"),
+                (plc + pd.Timedelta(days=63)).strftime("%d-%b-%Y"),
+                (plc + pd.Timedelta(days=153)).strftime("%d-%b-%Y"),
+                cross_date,
+            ]
+            for col_i, v in enumerate(cells, start=1):
+                cell = ws.cell(row=row, column=col_i, value=v)
+                cell.border = BORDER
+                cell.alignment = LEFT
+                cell.fill = fill_grey if row % 2 == 0 else fill_brand_light
+            ws.row_dimensions[row].height = 20
+            row += 1
+
+        # EOO probability table
+        row += 2
+        ws.cell(row=row, column=1,
+                 value="P(extinct) by days after projected last case").font = H2
+        row += 1
+        prob_rows = []
+        for s_name, plc in valid_plc.items():
+            for i, d in enumerate(eoo_days):
+                prob_rows.append({
+                    "scenario": scen_lbl.get(s_name, s_name),
+                    "days_after_last_case": int(d),
+                    "projected_date": (plc + pd.Timedelta(days=int(d))).strftime("%Y-%m-%d"),
+                    "P(extinct)": round(float(eoo_probs[i]), 4),
+                    "WHO 42-day met": int(d) >= 42,
+                    "Djaafara 63-day met": int(d) >= 63,
+                })
+        eoo_table = pd.DataFrame(prob_rows)
+        end_row = _append_table(ws, eoo_table, row)
+
+        # Interpretation
+        if cross_day is not None:
+            interp = (
+                f"P(extinct) crosses the {thr:.0%} declaration threshold at day "
+                f"{cross_day} after the projected last case. Under the Delayed "
+                "response scenario this corresponds to the latest end date; the "
+                "Strong response scenario yields the earliest. WHO 42-day and "
+                "Djaafara 63-day are heuristic operational rules; the "
+                f"{thr:.0%} threshold is the standard statistical convention."
+            )
+        else:
+            interp = (
+                f"P(extinct) does not reach the {thr:.0%} threshold within "
+                f"{int(eoo_days[-1])} days. Extend the days range or revisit Step 3 "
+                "scenarios to find an end date."
+            )
+        _interpretation_block(ws, end_row + 1, interp)
+
+        for col_letter, w in {"A": 26, "B": 18, "C": 18, "D": 18, "E": 22,
+                                "F": 18}.items():
+            ws.column_dimensions[col_letter].width = w
+
+    # =====================================================================
+    # SHEET 7 — Interpretation (overall narrative)
+    # =====================================================================
+    ws = wb.create_sheet("Interpretation")
+    _write_title_block(ws, "Overall interpretation",
+                        "Auto-generated narrative based on this run")
+    row = 4
+    narrative = []
+    narrative.append(f"Scenario: {scenario_name}")
+    narrative.append(f"Report generated: {now}")
+    narrative.append("")
+    if series is not None and len(series):
+        narrative.append(
+            f"DATA. Daily incidence series covers {len(series)} days "
+            f"({pd.to_datetime(series['date']).min():%d-%b-%Y} → "
+            f"{pd.to_datetime(series['date']).max():%d-%b-%Y}). "
+            f"Cumulative observed: {float(series['cumulative_confirmed'].iloc[-1]):,.0f} "
+            f"confirmed, "
+            f"{float(series['cumulative_suspected'].iloc[-1]):,.0f} suspected."
+        )
+    if rt_df is not None and not rt_df.empty:
+        prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
+        if not prim.empty:
+            latest = prim.iloc[-1]
+            mean_rt = float(latest["rt_mean"])
+            phrase = "growing" if mean_rt > 1 else "declining"
+            narrative.append(
+                f"TRANSMISSION. Latest R_t = {mean_rt:.2f} "
+                f"(95% CrI {float(latest['rt_lower']):.2f}–{float(latest['rt_upper']):.2f}); "
+                f"the outbreak is in a {phrase} phase as of the most recent "
+                f"reporting window."
+            )
+    if scenarios_out:
+        scen_lbl = {"S1": "Delayed", "S2": "Moderate", "S3": "Strong"}
+        lines = []
+        for name, data in scenarios_out.items():
+            v = data["cum_confirmed"]
+            med = v["median"] if isinstance(v, dict) else v
+            lines.append(
+                f"{scen_lbl.get(name, name)}: ~{float(med[-1]):,.0f} cumulative confirmed"
+            )
+        narrative.append(
+            "FORECAST. Under the three response scenarios at the horizon end: "
+            + "; ".join(lines) + "."
+        )
+    if valid_plc and eoo_probs is not None:
+        thr = ss.get("eoo_threshold", 0.95)
+        cross = np.where(eoo_probs >= thr)[0]
+        if len(cross) > 0:
+            cross_day = int(eoo_days[cross[0]])
+            mid_scen = list(valid_plc.keys())[len(valid_plc) // 2]
+            d = (valid_plc[mid_scen] + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+            narrative.append(
+                f"END OF OUTBREAK. P(extinct) crosses {thr:.0%} on approximately "
+                f"day {cross_day} after the projected last case. Under the "
+                "moderate response scenario this corresponds to declaration "
+                f"around {d}."
+            )
+        else:
+            narrative.append(
+                f"END OF OUTBREAK. P(extinct) does not reach {thr:.0%} within "
+                "the evaluated horizon."
+            )
+    narrative.append("")
+    narrative.append(
+        "KEY CAVEATS. Daily counts between sparse cumulative snapshots are "
+        "linearly interpolated. R_t scenarios are user-defined assumptions, not "
+        "predictions of response speed. Forecast PI bands reflect R_t posterior "
+        "sampling only — they do not include observation noise, CFR uncertainty, "
+        "or SI uncertainty. EOO is computed via Nishiura/Lloyd-Smith offspring "
+        "trees with NB dispersion k from Lloyd-Smith 2005."
+    )
+
+    for line in narrative:
+        ws.cell(row=row, column=1, value=line).alignment = WRAP
+        ws.cell(row=row, column=1).font = Font(name="Calibri", size=11)
+        ws.row_dimensions[row].height = max(20, min(80, len(line) // 10 + 18))
+        ws.merge_cells(start_row=row, start_column=1, end_row=row,
+                       end_column=10)
+        row += 1
+    ws.column_dimensions["A"].width = 120
+
+    # ---- finalise ----
+    buf = BytesIO()
+    wb.save(buf)
     return buf.getvalue()
 
 
