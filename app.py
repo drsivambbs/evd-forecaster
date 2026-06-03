@@ -7,6 +7,21 @@ from scipy.stats import gamma as gamma_dist
 from datetime import date, datetime
 from io import BytesIO
 
+
+def _slug(text: str) -> str:
+    """Filename-safe slug derived from a free-text scenario label."""
+    import re
+    s = re.sub(r"[^A-Za-z0-9]+", "_", (text or "").strip()).strip("_")
+    return s[:40].lower() or "scenario"
+
+
+def build_excel_report() -> bytes:
+    """Forward-callable wrapper. The full implementation is defined later in
+    the file so it can reference downstream helpers; calling this at module
+    top resolves the impl lazily at call time, not definition time."""
+    return _build_excel_report_impl()
+
+
 st.set_page_config(page_title="EVD Forecaster", layout="wide")
 
 st.markdown(
@@ -164,14 +179,7 @@ TPR = 0.192  # test positivity rate used in data_prep.py
 TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 
-def _slug(text: str) -> str:
-    """Filename-safe slug derived from a free-text scenario label."""
-    import re
-    s = re.sub(r"[^A-Za-z0-9]+", "_", (text or "").strip()).strip("_")
-    return s[:40].lower() or "scenario"
-
-
-def build_excel_report() -> bytes:
+def _build_excel_report_impl() -> bytes:
     """Bundle every input + output currently in session_state into one .xlsx.
 
     Sheets: Dashboard, Inputs, Daily incidence, Rt estimates, Forecast, EOO probability.
