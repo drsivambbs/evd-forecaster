@@ -16,170 +16,6 @@ def _slug(text: str) -> str:
 
 
 def build_excel_report() -> bytes:
-    """Forward-callable wrapper. The full implementation is defined later in
-    the file so it can reference downstream helpers; calling this at module
-    top resolves the impl lazily at call time, not definition time."""
-    return _build_excel_report_impl()
-
-
-st.set_page_config(page_title="EVD Forecaster", layout="wide")
-
-st.markdown(
-    """
-    <style>
-      :root {
-        --brand: #1f4e79;
-        --brand-soft: #f1f5fa;
-        --line: #e3e7ed;
-        --muted: #5b6573;
-      }
-      #MainMenu, header[data-testid="stHeader"], footer {visibility: hidden;}
-      .block-container {
-        padding-top: 1.4rem;
-        padding-bottom: 1rem;
-        max-width: 1400px;
-      }
-      html, body, [class*="css"] {
-        font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      }
-      h1.app-title {
-        font-size: 1.65rem;
-        font-weight: 600;
-        color: var(--brand);
-        margin: 0 0 0.15rem 0;
-        letter-spacing: -0.01em;
-      }
-      .app-sub {
-        color: var(--muted);
-        font-size: 0.93rem;
-        margin-bottom: 1.1rem;
-      }
-      .panel-title {
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: var(--brand);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin: 0 0 0.6rem 0;
-        padding-bottom: 0.4rem;
-        border-bottom: 2px solid var(--brand);
-      }
-      .section-label {
-        font-size: 0.82rem;
-        font-weight: 600;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin: 0.9rem 0 0.35rem 0;
-      }
-      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:first-child {
-        border-right: 1px solid var(--line);
-        padding-right: 1.4rem;
-      }
-      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {
-        padding-left: 1.4rem;
-      }
-      div[data-testid="stRadio"] label p { font-size: 0.88rem; }
-      div[data-testid="stCaptionContainer"] { color: var(--muted); }
-      .stButton > button[kind="primary"] {
-        background: var(--brand);
-        border: 1px solid var(--brand);
-        font-weight: 600;
-        letter-spacing: 0.02em;
-      }
-      .stButton > button[kind="primary"]:hover { background: #16385a; border-color: #16385a; }
-      .stDownloadButton > button { font-weight: 500; }
-      .stTabs [data-baseweb="tab-list"] { gap: 0.4rem; }
-      .stTabs [data-baseweb="tab"] {
-        padding: 0.4rem 0.9rem;
-        font-weight: 500;
-      }
-      .stTabs [aria-selected="true"] { color: var(--brand); }
-      .placeholder-card {
-        background: var(--brand-soft);
-        border: 1px dashed #c7d2e0;
-        border-radius: 8px;
-        padding: 1.6rem;
-        color: var(--muted);
-        text-align: center;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown('<h1 class="app-title">EVD Forecaster</h1>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="app-sub">Build a daily incidence series from cumulative DON '
-    'snapshots or incidence data. Output feeds the renewal-equation forecast model.</div>',
-    unsafe_allow_html=True,
-)
-
-# Scenario name (flows into chart titles and downloaded filenames)
-hdr_l, hdr_m, hdr_r = st.columns([2.4, 0.9, 0.9])
-with hdr_l:
-    scenario_name = st.text_input(
-        "Scenario / outbreak label",
-        value=st.session_state.get("scenario_name",
-                                   "DRC + Uganda EVD — May 2026"),
-        help="Stamped onto chart titles and CSV filenames so you can keep runs apart.",
-        key="scenario_name",
-    )
-with hdr_m:
-    st.markdown('<div style="margin-top:1.7rem;"></div>',
-                unsafe_allow_html=True)
-    if st.button("Input glossary", use_container_width=True,
-                 key="open_glossary"):
-        st.session_state["prev_step"] = st.session_state.get("step", "data")
-        st.session_state["step"] = "help"
-        st.rerun()
-with hdr_r:
-    st.markdown('<div style="margin-top:1.7rem;"></div>',
-                unsafe_allow_html=True)
-    if st.button("Reset all", use_container_width=True, key="reset_all",
-                 help="Clear every input and result. The page reloads with defaults."):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
-
-# Persistent Excel-export button row (just below the header)
-ex_l, ex_r = st.columns([3.4, 1])
-with ex_r:
-    try:
-        excel_bytes = build_excel_report()
-        slug = _slug(st.session_state.get("scenario_name", ""))
-        fname = (f"{slug}__evd_forecaster_report__"
-                 f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
-        st.download_button(
-            "Generate Excel report",
-            data=excel_bytes,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="excel_export",
-            help="Downloads a single .xlsx with Dashboard, Inputs, Daily incidence, "
-                 "R_t estimates, Forecast, and EOO probability sheets — based on "
-                 "whatever is currently in the app.",
-        )
-    except Exception as e:
-        st.caption(f"Excel export unavailable: {e}")
-
-
-# Project colour palette (matched to outputs/*.png)
-COLOURS = {
-    "new_confirmed": "#4682B4",
-    "new_suspected": "#FF8C00",
-    "new_deaths": "#B22222",
-    "cumulative_confirmed": "#4682B4",
-    "cumulative_suspected": "#FF8C00",
-    "cumulative_deaths": "#B22222",
-}
-
-TPR = 0.192  # test positivity rate used in data_prep.py
-TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
-
-
-def _build_excel_report_impl() -> bytes:
     """Bundle every input + output currently in session_state into one .xlsx.
 
     Sheets: Dashboard, Inputs, Daily incidence, Rt estimates, Forecast, EOO probability.
@@ -383,6 +219,163 @@ def _build_excel_report_impl() -> bytes:
             pd.DataFrame(rows).to_excel(writer, sheet_name="EOO probability",
                                           index=False)
     return buf.getvalue()
+
+
+st.set_page_config(page_title="EVD Forecaster", layout="wide")
+
+st.markdown(
+    """
+    <style>
+      :root {
+        --brand: #1f4e79;
+        --brand-soft: #f1f5fa;
+        --line: #e3e7ed;
+        --muted: #5b6573;
+      }
+      #MainMenu, header[data-testid="stHeader"], footer {visibility: hidden;}
+      .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 1rem;
+        max-width: 1400px;
+      }
+      html, body, [class*="css"] {
+        font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      }
+      h1.app-title {
+        font-size: 1.65rem;
+        font-weight: 600;
+        color: var(--brand);
+        margin: 0 0 0.15rem 0;
+        letter-spacing: -0.01em;
+      }
+      .app-sub {
+        color: var(--muted);
+        font-size: 0.93rem;
+        margin-bottom: 1.1rem;
+      }
+      .panel-title {
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: var(--brand);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin: 0 0 0.6rem 0;
+        padding-bottom: 0.4rem;
+        border-bottom: 2px solid var(--brand);
+      }
+      .section-label {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 0.9rem 0 0.35rem 0;
+      }
+      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:first-child {
+        border-right: 1px solid var(--line);
+        padding-right: 1.4rem;
+      }
+      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {
+        padding-left: 1.4rem;
+      }
+      div[data-testid="stRadio"] label p { font-size: 0.88rem; }
+      div[data-testid="stCaptionContainer"] { color: var(--muted); }
+      .stButton > button[kind="primary"] {
+        background: var(--brand);
+        border: 1px solid var(--brand);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .stButton > button[kind="primary"]:hover { background: #16385a; border-color: #16385a; }
+      .stDownloadButton > button { font-weight: 500; }
+      .stTabs [data-baseweb="tab-list"] { gap: 0.4rem; }
+      .stTabs [data-baseweb="tab"] {
+        padding: 0.4rem 0.9rem;
+        font-weight: 500;
+      }
+      .stTabs [aria-selected="true"] { color: var(--brand); }
+      .placeholder-card {
+        background: var(--brand-soft);
+        border: 1px dashed #c7d2e0;
+        border-radius: 8px;
+        padding: 1.6rem;
+        color: var(--muted);
+        text-align: center;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<h1 class="app-title">EVD Forecaster</h1>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="app-sub">Build a daily incidence series from cumulative DON '
+    'snapshots or incidence data. Output feeds the renewal-equation forecast model.</div>',
+    unsafe_allow_html=True,
+)
+
+# Scenario name (flows into chart titles and downloaded filenames)
+hdr_l, hdr_m, hdr_r = st.columns([2.4, 0.9, 0.9])
+with hdr_l:
+    scenario_name = st.text_input(
+        "Scenario / outbreak label",
+        value=st.session_state.get("scenario_name",
+                                   "DRC + Uganda EVD — May 2026"),
+        help="Stamped onto chart titles and CSV filenames so you can keep runs apart.",
+        key="scenario_name",
+    )
+with hdr_m:
+    st.markdown('<div style="margin-top:1.7rem;"></div>',
+                unsafe_allow_html=True)
+    if st.button("Input glossary", use_container_width=True,
+                 key="open_glossary"):
+        st.session_state["prev_step"] = st.session_state.get("step", "data")
+        st.session_state["step"] = "help"
+        st.rerun()
+with hdr_r:
+    st.markdown('<div style="margin-top:1.7rem;"></div>',
+                unsafe_allow_html=True)
+    if st.button("Reset all", use_container_width=True, key="reset_all",
+                 help="Clear every input and result. The page reloads with defaults."):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
+
+# Persistent Excel-export button row (just below the header)
+ex_l, ex_r = st.columns([3.4, 1])
+with ex_r:
+    try:
+        excel_bytes = build_excel_report()
+        slug = _slug(st.session_state.get("scenario_name", ""))
+        fname = (f"{slug}__evd_forecaster_report__"
+                 f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
+        st.download_button(
+            "Generate Excel report",
+            data=excel_bytes,
+            file_name=fname,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="excel_export",
+            help="Downloads a single .xlsx with Dashboard, Inputs, Daily incidence, "
+                 "R_t estimates, Forecast, and EOO probability sheets — based on "
+                 "whatever is currently in the app.",
+        )
+    except Exception as e:
+        st.caption(f"Excel export unavailable: {e}")
+
+
+# Project colour palette (matched to outputs/*.png)
+COLOURS = {
+    "new_confirmed": "#4682B4",
+    "new_suspected": "#FF8C00",
+    "new_deaths": "#B22222",
+    "cumulative_confirmed": "#4682B4",
+    "cumulative_suspected": "#FF8C00",
+    "cumulative_deaths": "#B22222",
+}
+
+TPR = 0.192  # test positivity rate used in data_prep.py
+TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 
 # Keys whose persistence is tracked across step navigation. These keys hold
