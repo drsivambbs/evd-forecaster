@@ -3296,8 +3296,8 @@ with left:
             default_cols = {
                 "date": [date(2026, 5, 16), date(2026, 5, 21),
                          date(2026, 5, 29)],
-                "cumulative_confirmed": [246, 746, 906],
-                "cumulative_suspected": [10, 85, 134],
+                "cumulative_confirmed": [10, 85, 134],
+                "cumulative_suspected": [246, 746, 906],
                 "cumulative_deaths": [84, 186, 241],
             }
         else:
