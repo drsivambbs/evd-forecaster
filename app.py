@@ -1535,10 +1535,13 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
 
 
 def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
-                   labels: dict, y_log: bool = True) -> go.Figure:
-    """One panel per response scenario, each showing 3 cumulative series
-    (confirmed / suspected / deaths). If scenarios values include median/lower/upper
-    dicts, draws a 90% PI band per series; otherwise draws a single line."""
+                   labels: dict, y_log: bool = True,
+                   mode: str = "cumulative") -> go.Figure:
+    """One panel per response scenario, each showing 3 series (confirmed /
+    suspected / deaths). mode='cumulative' (default) plots cumulative counts
+    with the observed baseline as a dotted reference; mode='daily' plots
+    daily new cases per day, no baseline line. Always draws 90% PI bands
+    when median/lower/upper dicts are available."""
     panel_order = [s for s in ["S1", "S2", "S3"] if s in scenarios]
     titles = [labels.get(s, s) for s in panel_order]
 
@@ -1547,14 +1550,25 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                         horizontal_spacing=0.04,
                         shared_yaxes=True)
 
-    metric_map = [
-        ("cum_confirmed", "Cumulative confirmed", "#4682B4",
-         "rgba(70,130,180,0.18)", "confirmed"),
-        ("cum_suspected", "Cumulative suspected", "#FF8C00",
-         "rgba(255,140,0,0.18)", "suspected"),
-        ("cum_deaths",    "Cumulative deaths",    "#B22222",
-         "rgba(178,34,34,0.18)", "deaths"),
-    ]
+    is_daily = mode == "daily"
+    if is_daily:
+        metric_map = [
+            ("new_confirmed", "New confirmed",  "#4682B4",
+             "rgba(70,130,180,0.18)", "confirmed"),
+            ("new_suspected", "New suspected",  "#FF8C00",
+             "rgba(255,140,0,0.18)", "suspected"),
+            ("new_deaths",    "New deaths",     "#B22222",
+             "rgba(178,34,34,0.18)", "deaths"),
+        ]
+    else:
+        metric_map = [
+            ("cum_confirmed", "Cumulative confirmed", "#4682B4",
+             "rgba(70,130,180,0.18)", "confirmed"),
+            ("cum_suspected", "Cumulative suspected", "#FF8C00",
+             "rgba(255,140,0,0.18)", "suspected"),
+            ("cum_deaths",    "Cumulative deaths",    "#B22222",
+             "rgba(178,34,34,0.18)", "deaths"),
+        ]
 
     def _split(metric_value):
         if isinstance(metric_value, dict):
@@ -1587,17 +1601,18 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                 hovertemplate=(f"<b>{label}</b><br>"
                                "%{x|%d-%b-%Y}<br>%{y:,.0f}<extra></extra>"),
             ), row=1, col=col_idx)
-            # Observed baseline marker (dotted horizontal)
-            fig.add_trace(go.Scatter(
-                x=[horizon_dates[0], horizon_dates[-1]],
-                y=[baselines[baseline_key], baselines[baseline_key]],
-                mode="lines",
-                line=dict(color=colour, dash="dot", width=1),
-                opacity=0.55,
-                legendgroup=label,
-                showlegend=False,
-                hoverinfo="skip",
-            ), row=1, col=col_idx)
+            # Observed baseline marker (dotted horizontal) — only for cumulative
+            if not is_daily:
+                fig.add_trace(go.Scatter(
+                    x=[horizon_dates[0], horizon_dates[-1]],
+                    y=[baselines[baseline_key], baselines[baseline_key]],
+                    mode="lines",
+                    line=dict(color=colour, dash="dot", width=1),
+                    opacity=0.55,
+                    legendgroup=label,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ), row=1, col=col_idx)
         fig.update_yaxes(type=("log" if y_log else "linear"),
                          row=1, col=col_idx,
                          showgrid=True, gridcolor="#eef1f5",
@@ -1606,11 +1621,13 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                          showgrid=True, gridcolor="#eef1f5",
                          linecolor="#cfd6df")
         if col_idx == 1:
-            fig.update_yaxes(
-                title_text=("Cumulative count (log)" if y_log
-                            else "Cumulative count"),
-                row=1, col=col_idx,
-            )
+            if is_daily:
+                title = ("New cases per day (log)" if y_log
+                         else "New cases per day")
+            else:
+                title = ("Cumulative count (log)" if y_log
+                         else "Cumulative count")
+            fig.update_yaxes(title_text=title, row=1, col=col_idx)
 
     fig.update_layout(
         template="simple_white",
@@ -2772,10 +2789,15 @@ if st.session_state["step"] == "forecast":
                        f"over {scen_inputs_used.get(name, {}).get('days', 0)} d)")
                 for name in scenarios_out
             }
-            tog_l, tog_r = st.columns([3, 1])
+            tog_l, tog_m, tog_r = st.columns([2, 1, 1])
+            with tog_m:
+                mode_view = st.radio(
+                    "View", ["Cumulative", "Daily"], horizontal=True,
+                    key="fc_view_mode", label_visibility="collapsed",
+                )
             with tog_r:
                 y_log = st.toggle("Log y-axis", value=True,
-                                   help="Toggle between log and linear cumulative-count scale.",
+                                   help="Toggle between log and linear scale.",
                                    key="fc_y_log")
             with tog_l:
                 st.caption(
@@ -2783,9 +2805,11 @@ if st.session_state["step"] == "forecast":
                     f"shaded band = 90% posterior predictive interval "
                     f"from {st.session_state.get('fc_n_samples', '?')} R_t draws."
                 )
-            _fig_forecast = forecast_chart(scenarios_out, horizon_dates,
-                                            baselines, scen_labels,
-                                            y_log=bool(y_log))
+            _fig_forecast = forecast_chart(
+                scenarios_out, horizon_dates, baselines, scen_labels,
+                y_log=bool(y_log),
+                mode=("daily" if mode_view == "Daily" else "cumulative"),
+            )
             st.session_state["chart_forecast"] = _fig_forecast
             st.plotly_chart(_fig_forecast, use_container_width=True)
 
