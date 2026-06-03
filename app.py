@@ -3056,43 +3056,74 @@ if st.session_state["step"] == "seihfr":
                 st.session_state["step"] = "forecast"
                 st.rerun()
 
-    # Method note
-    st.markdown(
-        """
-        <div style="margin-top:1.2rem; padding:1rem 1.2rem; background:#fafbfc;
-                    border-left:4px solid #1f4e79; border-radius:4px;
-                    font-size:0.9rem; color:#333; line-height:1.55;">
-        <b style="color:#1f4e79;">How the SEIHFR model works</b><br>
-        A 6-compartment ODE: <b>S</b>usceptible → <b>E</b>xposed → <b>I</b>nfectious
-        → <b>H</b>ospitalised → <b>F</b>uneral → <b>R</b>ecovered. Three
-        transmission routes are modelled separately — community
-        (β<sub>I</sub>), hospital (β<sub>H</sub>), and funeral
-        (β<sub>F</sub>) — because Ebola transmits strongly from corpses
-        (Wamala 2010 adjusted OR for funeral ritual = 3.83).
-        <ul style="margin:0.4rem 0 0.4rem 1.2rem;">
-          <li>Stage durations (incubation, onset-to-hospitalisation, etc.) define
-              the transition rates α, γ<sub>h</sub>, γ<sub>di</sub>,
-              γ<sub>dh</sub>, γ<sub>r</sub>, γ<sub>f</sub>.</li>
-          <li>The three β's are <b>fitted</b> by least-squares to your
-              observed cumulative confirmed cases, with initial conditions
-              derived from the first observation and the reporting rate.</li>
-          <li>Each scenario applies multipliers to the fitted β's. <b>Natural</b>
-              keeps everything at 1.0 — answering "what if no human action?"
-              <b>Funeral control</b> cuts β<sub>F</sub> to 20% (safe burials).
-              <b>Combined</b> additionally cuts β<sub>H</sub> to 40% (PPE,
-              isolation).</li>
-          <li>Unlike the renewal forecast, this model <b>tracks the susceptible
-              pool</b>, so the natural curve rises, peaks, and declines on its
-              own as susceptibles run out (no intervention needed).</li>
-        </ul>
-        References: Legrand et al. 2007 (model framework); Wamala et al. 2010
-        (Bundibugyo natural-history parameters); Djaafara et al. 2021
-        (EOO calibration).
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Method note + equations
+    with st.expander("📐 Method & equations — SEIHFR ODE (Legrand 2007 framework)",
+                      expanded=False):
+        st.markdown(
+            "A 6-compartment ODE: **S**usceptible → **E**xposed → **I**nfectious → "
+            "**H**ospitalised → **F**uneral → **R**ecovered. Three transmission routes "
+            "(community, hospital, funeral) are modelled separately because Ebola "
+            "transmits strongly from corpses (Wamala 2010 funeral OR = 3.83)."
+        )
 
+        st.markdown("**Force of infection:**")
+        st.latex(r"\lambda(t) = \dfrac{\beta_I\, I + \beta_H\, H + \beta_F\, F}{N}")
+        st.caption(
+            "Combined transmission pressure on susceptibles from community, hospital, "
+            "and funeral compartments."
+        )
+
+        st.markdown("**System of ODEs:**")
+        st.latex(r"""\begin{aligned}
+\dfrac{dS}{dt} &= -\lambda\, S \\
+\dfrac{dE}{dt} &= \lambda\, S - \alpha\, E \\
+\dfrac{dI}{dt} &= \alpha\, E - (\gamma_h + \gamma_{di} + \gamma_r)\, I \\
+\dfrac{dH}{dt} &= \gamma_h\, I - (\gamma_{dh} + \gamma_r)\, H \\
+\dfrac{dF}{dt} &= \gamma_{di}\, I + \gamma_{dh}\, H - \gamma_f\, F \\
+\dfrac{dR}{dt} &= \gamma_r\, I + \gamma_r\, H + \gamma_f\, F
+\end{aligned}""")
+        st.caption(
+            "I has THREE exits: hospitalise (γ_h), die in community (γ_di), recover "
+            "at home (γ_r). H has TWO exits: die (γ_dh) or recover (γ_r). The earlier "
+            "omission of community recovery inflated implied CFR to ~80%; corrected."
+        )
+
+        st.markdown("**Rate parameters from disease-stage durations:**")
+        st.latex(r"\alpha = \tfrac{1}{T_{\rm incub}},\quad "
+                  r"\gamma_h = \tfrac{1}{T_{\rm onset\,\to\,hosp}},\quad "
+                  r"\gamma_{di} = \tfrac{1}{T_{\rm onset\,\to\,death}}")
+        st.latex(r"\gamma_{dh} = \tfrac{1}{T_{\rm hosp\,\to\,death}},\quad "
+                  r"\gamma_r = \tfrac{1}{T_{\rm onset\,\to\,recovery}},\quad "
+                  r"\gamma_f = \tfrac{1}{T_{\rm death\,\to\,burial}}")
+        st.caption("Defaults: Wamala 2010 (Bundibugyo) and Legrand 2007 (Zaire proxy).")
+
+        st.markdown(
+            "**Next-generation basic reproduction number** "
+            "(literature anchor; ratios from Wamala 2010 OR):"
+        )
+        st.latex(r"R_0 = \beta_I\, T_I + \beta_H\, P_H\, T_H + \beta_F\, P_F\, T_F")
+        st.latex(r"T_I = \dfrac{1}{\gamma_h + \gamma_{di} + \gamma_r},\quad "
+                  r"T_H = \dfrac{1}{\gamma_{dh} + \gamma_r},\quad "
+                  r"T_F = \dfrac{1}{\gamma_f}")
+        st.latex(r"P_H = \gamma_h\, T_I,\quad "
+                  r"P_F = \gamma_{di}\, T_I + P_H \cdot \gamma_{dh}\, T_H")
+        st.caption(
+            "With Wamala-anchored ratios β_F/β_I = 3.83 and β_H/β_I = 2.0, we invert "
+            "this to solve for β_I given a literature R₀ target (default 2.0; EBOV "
+            "range 1.5–2.7 per WHO 2014 NEJM and Legrand 2007)."
+        )
+
+        st.markdown(
+            "**Scenarios** apply multipliers to the fitted β's. **Natural** keeps "
+            "everything at 1.0 (no intervention). **Funeral control** cuts β_F to "
+            "20% (safe burials). **Combined** additionally cuts β_H to 40% "
+            "(PPE, isolation). Because the model tracks the susceptible pool, the "
+            "natural curve rises, peaks, and declines on its own."
+        )
+        st.markdown(
+            "**References**: Legrand et al. 2007 (framework); Wamala et al. 2010 "
+            "(Bundibugyo natural-history); Djaafara et al. 2021 (EOO calibration)."
+        )
     st.stop()
 
 
@@ -3363,41 +3394,54 @@ if st.session_state["step"] == "eoo":
                     use_container_width=True,
                 )
 
-    # Method note
-    st.markdown(
-        """
-        <div style="margin-top:1.2rem; padding:1rem 1.2rem; background:#fafbfc;
-                    border-left:4px solid #1f4e79; border-radius:4px;
-                    font-size:0.9rem; color:#333; line-height:1.55;">
-        <b style="color:#1f4e79;">How EOO probability is computed</b><br>
-        <b>Nishiura/Lloyd-Smith offspring-tree simulation</b>. For each independent realisation:
-        <ul style="margin:0.4rem 0 0.4rem 1.2rem;">
-          <li><b>R<sub>t</sub></b> is drawn from the Cori (2013) Gamma posterior
-              at the latest window: Gamma(shape = α + I<sub>t</sub>,
-              rate = β + Λ<sub>t</sub>). No arbitrary linear decay.</li>
-          <li><b>Initial unobserved chains</b>: reporting fraction
-              p<sub>rep</sub> ~ Uniform(0.10, 0.30); seed n<sub>0</sub> = ⌈1/p<sub>rep</sub>⌉
-              cases at the projected last-case date.</li>
-          <li><b>Offspring</b>: each case generates Negative-Binomial(R, k) offspring,
-              where k is the dispersion (Lloyd-Smith 2005; EBOV ≈ 0.18). Small k captures
-              superspreading.</li>
-          <li><b>Generation time</b>: each offspring is offset from its parent by a
-              draw from the Gamma(SI<sub>mean</sub>, SI<sub>SD</sub>) serial interval
-              (same SI as Step 2).</li>
-          <li>The simulation traces the descendant tree until no active chains remain.
-              <b>P(extinct by day T)</b> = fraction of trees whose last descendant
-              occurred by day T after the projected last case.</li>
-        </ul>
-        <b>Declaration thresholds</b>: WHO declares an Ebola outbreak over
-        <b>42 days</b> after the last confirmed case (2 × max incubation of 21 d).
-        <b>Djaafara et al. 2021</b> recommends a more conservative <b>63-day preliminary</b>
-        + <b>+90-day final</b> declaration with explicit reporting-rate adjustment. The
-        <b>95% probability threshold</b> is the standard cut-off for high confidence
-        that transmission has truly stopped.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Method note + equations
+    with st.expander("📐 Method & equations — Nishiura / Lloyd-Smith branching",
+                      expanded=False):
+        st.markdown("**Step 1 — R_t drawn from the Cori 2013 Gamma posterior:**")
+        st.latex(r"R \;\sim\; \mathrm{Gamma}(\alpha + I_{[t-\tau+1,t]},\; "
+                  r"\beta + \Lambda_{[t-\tau+1,t]})")
+        st.caption(
+            "Each tree gets its own R drawn from the posterior — propagates Step 2 "
+            "uncertainty into the EOO calculation."
+        )
+
+        st.markdown("**Step 2 — Initial unobserved chains:**")
+        st.latex(r"p_{\rm rep} \sim \mathrm{Uniform}(0.10,\,0.30) "
+                  r"\qquad "
+                  r"n_0 = \left\lceil \dfrac{1}{p_{\rm rep}} \right\rceil")
+        st.caption(
+            "If only 1 in p_rep cases is reported, we expect n_0 hidden infectious "
+            "chains active at the last reported case date."
+        )
+
+        st.markdown("**Step 3 — Negative-Binomial offspring (per case):**")
+        st.latex(r"X \;\sim\; \mathrm{NB}\!\left(k,\; \dfrac{k}{k + R}\right),"
+                  r"\quad \mathbb{E}[X] = R")
+        st.caption(
+            "k is the dispersion (Lloyd-Smith 2005; EBOV k ≈ 0.18). Small k = "
+            "heavy right tail = superspreading."
+        )
+
+        st.markdown("**Step 4 — Generation time per offspring:**")
+        st.latex(r"\tau \;\sim\; \mathrm{Gamma}(\mu_{SI},\, \sigma_{SI}^2) "
+                  r"\qquad t_{\rm offspring} = t_{\rm parent} + \tau")
+        st.caption("Same Gamma SI as Step 2.")
+
+        st.markdown("**Step 5 — End-of-outbreak probability:**")
+        st.latex(r"P\bigl(\text{extinct by day } T\bigr) = "
+                  r"\dfrac{1}{N_{\rm sim}}\sum_{i=1}^{N_{\rm sim}}"
+                  r"\mathbf{1}\!\left[ \max_{j} t^{(i)}_{j} \le T \right]")
+        st.caption(
+            "Fraction of simulated trees whose last descendant occurred by day T "
+            "after the projected last case."
+        )
+
+        st.markdown(
+            "**Declaration thresholds**: WHO **42 days** (2 × max incubation 21 d). "
+            "**Djaafara et al. 2021** uses a more conservative **63-day preliminary** + "
+            "**+90-day final** with explicit reporting-rate adjustment. The **95% "
+            "probability threshold** is the standard cut-off for high confidence."
+        )
 
     st.stop()
 
@@ -3876,29 +3920,47 @@ if st.session_state["step"] == "forecast":
                 st.session_state["step"] = "eoo"
                 st.rerun()
 
-    # Method note
-    st.markdown(
-        """
-        <div style="margin-top:1.2rem; padding:1rem 1.2rem; background:#fafbfc;
-                    border-left:4px solid #1f4e79; border-radius:4px;
-                    font-size:0.9rem; color:#333; line-height:1.55;">
-        <b style="color:#1f4e79;">How the forecast is computed</b><br>
-        Forward projection using the <b>renewal equation</b> (Nouvellet et al. 2018):
-        <code>I<sub>t</sub> = R<sub>t</sub> · &sum;<sub>s=1</sub><sup>t</sup>
-        w<sub>s</sub> &middot; I<sub>t-s</sub></code>,
-        where <code>w<sub>s</sub></code> is the discretised Gamma serial-interval
-        probability mass (same SI as Step 2). Confirmed and suspected series are
-        projected independently from their own seed histories.
-        <b>Deaths</b> are derived from projected confirmed cases via the case
-        fatality ratio with an onset-to-death lag: <code>D<sub>t</sub> = CFR &middot;
-        I<sub>t&minus;lag</sub><sup>conf</sup></code>. Cumulative series are seeded
-        from the observed baseline at the start date. The three scenarios share the
-        same starting R<sub>t</sub> (your Step 2 selection) and differ only in the
-        decline trajectory.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Method note + equations
+    with st.expander("📐 Method & equations — Renewal-equation forecast "
+                       "(Nouvellet 2018)", expanded=False):
+        st.markdown("**Step 1 — Renewal equation (projection one day forward):**")
+        st.latex(r"I_t \;=\; R_t \cdot \sum_{s=1}^{t} w_s \cdot I_{t-s}")
+        st.caption(
+            "Today's new cases = R_t times a weighted sum of recent cases. "
+            "Weights w_s are the same Gamma SI weights as Step 2 (recent days "
+            "matter more)."
+        )
+
+        st.markdown("**Step 2 — Linear R_t trajectory per scenario:**")
+        st.latex(
+            r"R_t = "
+            r"\begin{cases}"
+            r"R_0 + (R_{\rm target} - R_0)\cdot \dfrac{t}{D},"
+            r"& t \le D \\[4pt]"
+            r"R_{\rm target},"
+            r"& t > D"
+            r"\end{cases}"
+        )
+        st.caption(
+            "Each scenario (S1/S2/S3) starts from the R_t selected in Step 2 "
+            "and declines linearly to its target over D days, then plateaus."
+        )
+
+        st.markdown("**Step 3 — Deaths from confirmed cases with lag:**")
+        st.latex(r"D_t \;=\; \mathrm{CFR} \cdot I_{t - \ell}^{\,\mathrm{confirmed}}")
+        st.caption(
+            "Deaths at day t are CFR × confirmed cases ℓ days ago (default ℓ = 10, "
+            "Wamala 2010)."
+        )
+
+        st.markdown("**Step 4 — Cumulative trajectories:**")
+        st.latex(r"C_t \;=\; C_{\rm obs} + \sum_{k=0}^{t} I_k")
+        st.caption(
+            "Anchored at the observed baseline at the start date. Confirmed and "
+            "suspected are projected independently from their own seed series. "
+            "Shaded band on chart = 90% posterior predictive interval from N R_t "
+            "samples drawn from the Cori Gamma posterior of Step 2."
+        )
 
     st.stop()
 
@@ -4169,32 +4231,45 @@ if st.session_state["step"] == "rt":
                     use_container_width=True,
                 )
 
-    # Method note below both columns
-    st.markdown(
-        """
-        <div style="margin-top:1.2rem; padding:1rem 1.2rem; background:#fafbfc;
-                    border-left:4px solid #1f4e79; border-radius:4px;
-                    font-size:0.9rem; color:#333; line-height:1.55;">
-        <b style="color:#1f4e79;">How R<sub>t</sub> is calculated</b><br>
-        Instantaneous reproduction number using the <b>Cori et al. (2013)</b>
-        sliding-window Bayesian method.
-        For a window ending at time <i>t</i>:
-        <ul style="margin:0.4rem 0 0.4rem 1.2rem;">
-          <li>Observed incidence: <code>I<sub>t</sub> = &sum;<sub>k=t-w+1</sub><sup>t</sup> I<sub>k</sub></code></li>
-          <li>Serial-interval-weighted past incidence:
-              <code>&Lambda;<sub>t</sub> = &sum;<sub>s=1</sub><sup>t</sup> w<sub>s</sub> &middot; I<sub>t-s</sub></code>,
-              where <code>w<sub>s</sub></code> is the discretised Gamma(SI mean, SI SD) probability mass.</li>
-          <li>Posterior R<sub>t</sub> ~ Gamma(shape<sub>0</sub> + I<sub>t</sub>, rate<sub>0</sub> + &Lambda;<sub>t</sub>);
-              mean = shape&prime; / rate&prime;, 95% CrI from the 2.5% and 97.5% quantiles.</li>
-        </ul>
-        Defaults follow the project: SI Gamma(15.3 d, 9.3 d) — Zaire EBOV proxy
-        (WHO 2014 NEJM); window = 7 days; priors shape = 1, rate = 5. Sensitivity SI
-        Gamma(12, 5) is overlaid as a dashed line if enabled. The R<sub>t</sub> = 1
-        threshold separates a growing outbreak (above) from a declining one (below).
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Method note + equations
+    with st.expander("📐 Method & equations — Cori 2013 R_t estimator",
+                      expanded=False):
+        st.markdown(
+            "Instantaneous reproduction number using the **Cori et al. (2013)** "
+            "sliding-window Bayesian method. For each window of length τ ending at time _t_:"
+        )
+        st.markdown("**Step 1 — Discretise the serial interval** (Gamma):")
+        st.latex(r"w_s = F_\Gamma(s + 0.5) - F_\Gamma(s - 0.5),\quad s = 1, 2, \dots")
+        st.caption("How much weight each past day carries for explaining today's cases.")
+
+        st.markdown("**Step 2 — SI-weighted past incidence** at every day _s_:")
+        st.latex(r"\Lambda_s \;=\; \sum_{k=1}^{s} w_k \cdot I_{s-k}")
+        st.caption("How many secondary infections we would have expected today if R_t = 1.")
+
+        st.markdown("**Step 3 — Window sums** over the last τ days:")
+        st.latex(r"I_{[t-\tau+1,\,t]} = \sum_{s=t-\tau+1}^{t} I_s "
+                  r"\qquad "
+                  r"\Lambda_{[t-\tau+1,\,t]} = \sum_{s=t-\tau+1}^{t} \Lambda_s")
+        st.caption("Both incidence and Λ are summed over the SAME window — "
+                    "matches Cori 2013 eq. (4) and the EpiEstim R package.")
+
+        st.markdown("**Step 4 — Conjugate Gamma posterior:**")
+        st.latex(r"R_t \mid \mathrm{data} \;\sim\; "
+                  r"\mathrm{Gamma}\!\left( "
+                  r"\alpha_0 + I_{[t-\tau+1,t]}, \; "
+                  r"\beta_0 + \Lambda_{[t-\tau+1,t]}"
+                  r"\right)")
+        st.latex(r"\widehat{R}_t = "
+                  r"\frac{\alpha_0 + I_{[t-\tau+1,t]}}"
+                  r"{\beta_0 + \Lambda_{[t-\tau+1,t]}}")
+        st.caption("95% CrI from the Gamma 2.5% and 97.5% quantiles.")
+
+        st.markdown(
+            "**Defaults:** SI Gamma(15.3 d, 9.3 d) — Zaire EBOV proxy (WHO 2014 NEJM); "
+            "τ = 7 days; prior Gamma(α₀ = 1, β₀ = 0.2) → prior mean R = 5 "
+            "(EpiEstim default, weakly informative). "
+            "**R_t = 1** separates a growing outbreak (above) from a declining one (below)."
+        )
 
     st.stop()
 
