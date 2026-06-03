@@ -1631,8 +1631,8 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
 
     fig.update_layout(
         template="simple_white",
-        height=480,
-        margin=dict(l=60, r=20, t=70, b=95),
+        height=520,
+        margin=dict(l=60, r=20, t=110, b=95),
         legend=dict(orientation="h", yanchor="top", y=-0.18,
                     xanchor="center", x=0.5, font=dict(size=11),
                     bgcolor="rgba(255,255,255,0.7)"),
@@ -1641,7 +1641,12 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
         hovermode="x unified",
     )
     for ann in fig.layout.annotations:
-        ann.font = dict(size=13, color="#1f4e79")
+        ann.font = dict(size=12, color="#1f4e79")
+        # Anchor titles at the top of each subplot and add headroom so the
+        # text (which may contain HTML for R_t subscript) doesn't overlap
+        # the plot area.
+        ann.y = (ann.y if ann.y is not None else 1) + 0.04
+        ann.yanchor = "bottom"
     return fig
 
 
@@ -2761,10 +2766,9 @@ if st.session_state["step"] == "forecast":
         # R_t trajectory preview always visible (updates as inputs change)
         preview_traj = st.session_state.get("fc_preview_traj")
         preview_dates = st.session_state.get("fc_preview_dates")
-        if preview_traj is not None and preview_dates is not None:
-            _fig_preview = rt_preview_chart(preview_traj, preview_dates)
-            st.session_state["chart_rt_preview"] = _fig_preview
-            st.plotly_chart(_fig_preview, use_container_width=True)
+        # R_t trajectory preview chart removed per UI request — the scenarios
+        # are visible in the legend and chart annotations of the forecast
+        # chart itself.
 
         scenarios_out = st.session_state.get("fc_scenarios")
         horizon_dates = st.session_state.get("fc_dates")
@@ -2792,7 +2796,7 @@ if st.session_state["step"] == "forecast":
             tog_l, tog_m, tog_r = st.columns([2, 1, 1])
             with tog_m:
                 mode_view = st.radio(
-                    "View", ["Cumulative", "Daily"], horizontal=True,
+                    "View", ["Daily", "Cumulative"], horizontal=True,
                     key="fc_view_mode", label_visibility="collapsed",
                 )
             with tog_r:
