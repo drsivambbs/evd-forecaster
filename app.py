@@ -3294,11 +3294,11 @@ with left:
         )
         if is_cumulative:
             default_cols = {
-                "date": [date(2026, 5, 15), date(2026, 5, 21),
-                         date(2026, 5, 27), date(2026, 5, 29)],
-                "cumulative_confirmed": [8, 83, 125, 134],
-                "cumulative_suspected": [246, 746, 906, 1262],
-                "cumulative_deaths": [4, 9, 17, 18],
+                "date": [date(2026, 5, 16), date(2026, 5, 21),
+                         date(2026, 5, 29)],
+                "cumulative_confirmed": [246, 746, 906],
+                "cumulative_suspected": [10, 85, 134],
+                "cumulative_deaths": [84, 186, 241],
             }
         else:
             default_cols = {
@@ -3309,12 +3309,12 @@ with left:
                 "new_deaths": [4, 5, 8, 1],
             }
         if per_row_source:
+            n_rows = len(default_cols["date"])
             default_cols["source"] = [
                 "https://www.who.int/.../2026-DON602",
                 "https://www.who.int/.../2026-DON603",
                 "https://www.who.int/.../2026-DON605",
-                "https://www.who.int/.../2026-DON605",
-            ]
+            ][:n_rows] + [""] * max(0, n_rows - 3)
         default_df = pd.DataFrame(default_cols)
 
         column_config = {"date": st.column_config.DateColumn("Date", required=True)}
