@@ -1547,7 +1547,7 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
 
     fig = make_subplots(rows=1, cols=len(panel_order),
                         subplot_titles=titles,
-                        horizontal_spacing=0.04,
+                        horizontal_spacing=0.09,
                         shared_yaxes=True)
 
     is_daily = mode == "daily"
@@ -1631,8 +1631,8 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
 
     fig.update_layout(
         template="simple_white",
-        height=520,
-        margin=dict(l=60, r=20, t=110, b=95),
+        height=560,
+        margin=dict(l=60, r=20, t=140, b=95),
         legend=dict(orientation="h", yanchor="top", y=-0.18,
                     xanchor="center", x=0.5, font=dict(size=11),
                     bgcolor="rgba(255,255,255,0.7)"),
@@ -1642,10 +1642,9 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
     )
     for ann in fig.layout.annotations:
         ann.font = dict(size=12, color="#1f4e79")
-        # Anchor titles at the top of each subplot and add headroom so the
-        # text (which may contain HTML for R_t subscript) doesn't overlap
-        # the plot area.
-        ann.y = (ann.y if ann.y is not None else 1) + 0.04
+        ann.align = "center"
+        # Lift the (now two-line) subplot title above the plot area.
+        ann.y = (ann.y if ann.y is not None else 1) + 0.07
         ann.yanchor = "bottom"
     return fig
 
@@ -2787,10 +2786,14 @@ if st.session_state["step"] == "forecast":
         else:
             scen_inputs_used = st.session_state.get("fc_scen_inputs", {})
             scen_labels = {
-                name: (f"<b>{scen_defaults[name]['label']}</b> "
-                       f"(R<sub>t</sub> → "
-                       f"{scen_inputs_used.get(name, {}).get('target', 0):.1f} "
-                       f"over {scen_inputs_used.get(name, {}).get('days', 0)} d)")
+                name: (
+                    f"<b>{scen_defaults[name]['label']}</b><br>"
+                    f"<span style='font-size:10px;color:#5b6573;'>"
+                    f"R<sub>t</sub> → "
+                    f"{scen_inputs_used.get(name, {}).get('target', 0):.1f} "
+                    f"over {scen_inputs_used.get(name, {}).get('days', 0)} d"
+                    f"</span>"
+                )
                 for name in scenarios_out
             }
             tog_l, tog_m, tog_r = st.columns([2, 1, 1])
