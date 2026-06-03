@@ -275,7 +275,7 @@ def build_excel_report() -> bytes:
         ("Step 3 — Forecast", None, None, None, None),
         ("CFR", 0.34, "cfr_val", "float", "cfr_src"),
         ("Onset-to-death lag (days)", 10, "lag_val", "int", "lag_src"),
-        ("Forecast horizon (days)", 180, "forecast_horizon", "int", None),
+        ("Forecast horizon (days)", 365, "forecast_horizon", "int", None),
         ("Forecast start date", "", "forecast_start_date", "string", None),
         ("S1 target R_t", 1.0, "S1_target", "float", None),
         ("S1 days to target", 60, "S1_days", "int", None),
@@ -2045,9 +2045,9 @@ if st.session_state["step"] == "help":
     )
     gentry(
         "Horizon (days)",
-        "180",
+        "365",
         "Number of days projected forward. Long horizons amplify R<sub>t</sub> "
-        "mis-specification; in practice operational forecasts cover 30–180 days.",
+        "mis-specification; in practice operational forecasts cover 30–365 days.",
         "How many days into the future to predict. Longer horizons are less reliable.",
     )
     gentry(
@@ -2558,7 +2558,7 @@ if st.session_state["step"] == "forecast":
         with w2:
             horizon = st.number_input(
                 "Horizon (days)", min_value=7, max_value=720,
-                value=st.session_state.get("forecast_horizon", 180), step=7,
+                value=st.session_state.get("forecast_horizon", 365), step=7,
                 key="forecast_horizon",
             )
 
