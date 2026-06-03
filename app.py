@@ -972,6 +972,50 @@ def interpolate_from_cumulative(snaps: pd.DataFrame) -> pd.DataFrame:
 
     snaps["date"] = pd.to_datetime(snaps["date"])
     snaps = snaps.sort_values("date").reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # BACK-EXTRAPOLATION of the first snapshot's cumulative count.
+    # Without this, day 0's daily new = 0 (because there is no prior
+    # cumulative to diff against), and the sum of new_X across the
+    # displayed series equals (final cumulative - first cumulative)
+    # rather than the final cumulative itself.
+    #
+    # Algorithm: use the per-day rate from the FIRST inter-snapshot
+    # window to extend the series backward. For each cumulative
+    # column the days needed to accumulate v1 at that rate are
+    # ceil(v1 / rate); we pick the max across columns so a single
+    # virtual day-0 (cumulative = 0 for every column) anchors the
+    # back-extrapolation. Linear interpolation between that virtual
+    # day and the first real snapshot then naturally distributes the
+    # implied early cases. Result: sum(new_X) = final cumulative_X.
+    # ------------------------------------------------------------------
+    d1 = snaps.loc[0, "date"]
+    d2 = snaps.loc[1, "date"]
+    days_between = (d2 - d1).days
+    if days_between > 0:
+        days_back_per_col = []
+        for col in ["cumulative_confirmed", "cumulative_suspected",
+                    "cumulative_deaths"]:
+            v1 = float(snaps.loc[0, col])
+            v2 = float(snaps.loc[1, col])
+            delta = v2 - v1
+            if delta > 0 and v1 > 0:
+                rate = delta / days_between
+                days_back_per_col.append(int(np.ceil(v1 / rate)))
+        if days_back_per_col:
+            days_back = max(days_back_per_col)
+            virtual_date = d1 - pd.Timedelta(days=days_back)
+            virtual_row = {
+                "date": virtual_date,
+                "cumulative_confirmed": 0.0,
+                "cumulative_suspected": 0.0,
+                "cumulative_deaths": 0.0,
+            }
+            if "source" in snaps.columns:
+                virtual_row["source"] = "(back-extrapolated baseline)"
+            snaps = pd.concat([pd.DataFrame([virtual_row]), snaps],
+                              ignore_index=True)
+
     full_dates = pd.date_range(snaps["date"].min(), snaps["date"].max(), freq="D")
 
     indexed = snaps.set_index("date")
@@ -3297,7 +3341,9 @@ with left:
             incidence_df = edited
 
         st.caption(
-            "Linear interpolation between snapshots (matches `scripts/data_prep.py`)."
+            "Linear interpolation between snapshots. The first snapshot's "
+            "cumulative count is back-extrapolated at the first inter-snapshot "
+            "rate so the sum of daily new cases equals the final cumulative."
             if is_cumulative
             else "Daily rows used as-is; gappy rows distributed uniformly across the window."
         )
