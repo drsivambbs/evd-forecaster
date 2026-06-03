@@ -2005,9 +2005,9 @@ step_html = (
     'flex-wrap:wrap;">'
     + _pill("Step 1 · Daily incidence", step_now == "data")
     + _pill("Step 2 · R_t estimation", step_now == "rt")
-    + _pill("Step 3 · Forecast", step_now == "forecast")
-    + _pill("Step 4 · End of outbreak", step_now == "eoo")
-    + _pill("Step 5 · SEIHFR (natural)", step_now == "seihfr")
+    + _pill("Step 3 · SEIHFR (optional)", step_now == "seihfr")
+    + _pill("Step 4 · Forecast", step_now == "forecast")
+    + _pill("Step 5 · End of outbreak", step_now == "eoo")
     + '</div>'
 )
 st.markdown(step_html, unsafe_allow_html=True)
@@ -2863,8 +2863,8 @@ if st.session_state["step"] == "seihfr":
                         unsafe_allow_html=True)
         with top_row[1]:
             if st.button("← Back", use_container_width=True,
-                          key="back_to_eoo"):
-                st.session_state["step"] = "eoo"
+                          key="back_to_rt_from_seihfr"):
+                st.session_state["step"] = "rt"
                 st.rerun()
 
         results = st.session_state.get("seihfr_results")
@@ -2995,6 +2995,13 @@ if st.session_state["step"] == "seihfr":
                     f"{slug}__seihfr_projections.csv", "text/csv",
                     use_container_width=True,
                 )
+
+            # Next: Forecast (Step 4)
+            if st.button("Next: Step 4 — Forecast  →", type="primary",
+                          use_container_width=True,
+                          key="goto_forecast_from_seihfr"):
+                st.session_state["step"] = "forecast"
+                st.rerun()
 
     # Method note
     st.markdown(
@@ -3302,13 +3309,6 @@ if st.session_state["step"] == "eoo":
                     f"{slug}__eoo_probability.csv", "text/csv",
                     use_container_width=True,
                 )
-
-            # Next: SEIHFR natural-curve model
-            if st.button("Next: SEIHFR (natural curve)  →",
-                          type="primary", use_container_width=True,
-                          key="goto_seihfr"):
-                st.session_state["step"] = "seihfr"
-                st.rerun()
 
     # Method note
     st.markdown(
@@ -4077,11 +4077,20 @@ if st.session_state["step"] == "rt":
                 st.session_state["selected_rt"] = selected_rt
                 st.session_state["selected_rt_basis"] = preset
 
-                # Next: Forecast
-                if st.button("Next: Run forecast  →", type="primary",
-                             use_container_width=True, key="goto_forecast"):
-                    st.session_state["step"] = "forecast"
-                    st.rerun()
+                # Two next buttons: optional SEIHFR side-step, or direct to forecast
+                nxt_l, nxt_r = st.columns(2)
+                with nxt_l:
+                    if st.button("Step 3: SEIHFR (optional)  →",
+                                  use_container_width=True,
+                                  key="goto_seihfr_from_rt"):
+                        st.session_state["step"] = "seihfr"
+                        st.rerun()
+                with nxt_r:
+                    if st.button("Skip → Step 4: Forecast  →", type="primary",
+                                  use_container_width=True,
+                                  key="goto_forecast"):
+                        st.session_state["step"] = "forecast"
+                        st.rerun()
 
             # ----- Show table & downloads (collapsed by default) -----
             with st.expander("Show table / data", expanded=False):
