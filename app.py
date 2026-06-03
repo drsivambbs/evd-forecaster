@@ -1912,14 +1912,15 @@ SEIHFR_SCENARIO_COLOURS = {
 
 
 def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
-                  y_log: bool = False) -> go.Figure:
+                  y_log: bool = False, shared_y: bool = False) -> go.Figure:
     """3-panel chart, one panel per scenario, showing daily new cases or
-    cumulative on a shared y-axis."""
+    cumulative. shared_y=False (default) gives each panel its own y-axis
+    so curve shape is visible even when peaks differ by a factor of 5+."""
     names = list(scenarios_results.keys())
     fig = make_subplots(rows=1, cols=len(names),
                         subplot_titles=[f"<b>{n}</b>" for n in names],
-                        horizontal_spacing=0.09,
-                        shared_yaxes=True)
+                        horizontal_spacing=0.10,
+                        shared_yaxes=bool(shared_y))
     is_daily = view == "daily"
     series_key = "new_cases" if is_daily else "cumulative"
     ylabel = ("New cases per day" if is_daily else "Cumulative cases")
@@ -1949,11 +1950,11 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
         fig.update_yaxes(type=("log" if y_log else "linear"),
                           row=1, col=col_idx,
                           showgrid=True, gridcolor="#eef1f5",
-                          linecolor="#cfd6df")
+                          linecolor="#cfd6df", showticklabels=True)
         fig.update_xaxes(row=1, col=col_idx,
                           showgrid=True, gridcolor="#eef1f5",
                           linecolor="#cfd6df")
-        if col_idx == 1:
+        if col_idx == 1 or not shared_y:
             fig.update_yaxes(title_text=ylabel, row=1, col=col_idx)
 
     fig.update_layout(
@@ -2897,7 +2898,7 @@ if st.session_state["step"] == "seihfr":
                 unsafe_allow_html=True,
             )
 
-            tog_l, tog_m, tog_r = st.columns([2, 1, 1])
+            tog_l, tog_m, tog_r, tog_x = st.columns([1.6, 1, 1, 1])
             with tog_m:
                 view_mode = st.radio(
                     "View", ["Daily", "Cumulative"], horizontal=True,
@@ -2906,17 +2907,24 @@ if st.session_state["step"] == "seihfr":
             with tog_r:
                 y_log_se = st.toggle("Log y-axis", value=False,
                                       key="seihfr_y_log")
+            with tog_x:
+                shared_y_se = st.toggle(
+                    "Shared y-axis", value=False, key="seihfr_shared_y",
+                    help="OFF (default): each panel has its own y-scale so "
+                         "the shape of each scenario is visible. ON: same "
+                         "scale across all 3 for direct magnitude comparison.",
+                )
             with tog_l:
                 st.caption(
                     "3-panel SEIHFR projection. "
-                    "Natural = no intervention (the answer to your "
-                    "no-human-action question)."
+                    "Natural = no intervention."
                 )
 
             _fig_se = seihfr_chart(
                 results, dates_arr,
                 view=("daily" if view_mode == "Daily" else "cumulative"),
                 y_log=bool(y_log_se),
+                shared_y=bool(shared_y_se),
             )
             st.session_state["chart_seihfr"] = _fig_se
             st.plotly_chart(_fig_se, use_container_width=True)
