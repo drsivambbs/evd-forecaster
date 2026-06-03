@@ -1849,33 +1849,59 @@ def seihfr_run(beta_I, beta_H, beta_F, params_tuple, n_days, y0):
     return t, sol, new_cases, cumulative
 
 
-def seihfr_fit(observed_cumulative: np.ndarray, params_tuple, y0,
-                ratio_H: float = 2.0, ratio_F: float = 3.83):
-    """Fit beta_I by 1-parameter least-squares; derive beta_H = ratio_H * beta_I
-    and beta_F = ratio_F * beta_I. Ratios are anchored on Wamala 2010 odds
-    ratios so the three transmission routes can't collapse to zero
-    (which happens when fitting all three independently against sparse data)."""
-    from scipy.optimize import minimize_scalar
-    n_obs = len(observed_cumulative)
-    n_days = max(n_obs + 5, 30)
+def seihfr_R0(beta_I, beta_H, beta_F, params_tuple) -> float:
+    """Next-generation R0 for the SEIHFR model (Legrand 2007).
 
-    def objective(bI):
-        if bI <= 0:
-            return 1e12
-        bH = bI * ratio_H
-        bF = bI * ratio_F
-        try:
-            _, _, _, mc = seihfr_run(bI, bH, bF, params_tuple, n_days, y0)
-            model_cum_obs = mc[:n_obs] + observed_cumulative[0]
-            return float(np.sum((model_cum_obs - observed_cumulative) ** 2))
-        except Exception:
-            return 1e12
+    R0 = β_I · T_I + β_H · P_H · T_H + β_F · P_F · T_F
+    where:
+      T_I = 1 / (γ_h + γ_di)        — mean time in Infectious
+      T_H = 1 / (γ_dh + γ_r)        — mean time in Hospitalised
+      T_F = 1 / γ_f                 — mean time in Funeral
+      P_H = γ_h / (γ_h + γ_di)      — P(infectious case → hospitalised)
+      P_F_from_I = γ_di / (γ_h + γ_di)
+      P_F_from_H = γ_dh / (γ_dh + γ_r)
+      P_F = P_F_from_I + P_H · P_F_from_H
+    """
+    _, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, _ = params_tuple
+    T_I = 1.0 / max(gamma_h + gamma_di, 1e-9)
+    T_H = 1.0 / max(gamma_dh + gamma_r, 1e-9)
+    T_F = 1.0 / max(gamma_f, 1e-9)
+    P_H = gamma_h / max(gamma_h + gamma_di, 1e-9)
+    P_F_from_I = gamma_di / max(gamma_h + gamma_di, 1e-9)
+    P_F_from_H = gamma_dh / max(gamma_dh + gamma_r, 1e-9)
+    P_F = P_F_from_I + P_H * P_F_from_H
+    return (beta_I * T_I + beta_H * P_H * T_H + beta_F * P_F * T_F)
 
-    result = minimize_scalar(objective, bounds=(1e-4, 1.0),
-                               method="bounded",
-                               options={"xatol": 1e-7})
-    bI = float(result.x)
-    return bI, bI * ratio_H, bI * ratio_F
+
+def seihfr_betas_from_R0(R0_target: float, params_tuple,
+                          ratio_H: float = 2.0,
+                          ratio_F: float = 3.83):
+    """Derive (beta_I, beta_H, beta_F) from a literature R0 target and the
+    Wamala-anchored transmission-route ratios, using the **correct**
+    next-generation R0 formula for SEIHFR (Legrand 2007):
+
+        R0 = β_I · T_I + β_H · P_H · T_H + β_F · P_F · T_F
+
+    With β_H = ratio_H · β_I and β_F = ratio_F · β_I, solve for β_I:
+
+        β_I = R0 / (T_I + ratio_H · P_H · T_H + ratio_F · P_F · T_F)
+
+    The earlier formula (β_I/γ_r + β_H/γ_dh + β_F/γ_f) used recovery time
+    for the community route, which inflates R0 calibration by ~3× and
+    leaves the simulated outbreak near the epidemic threshold. EBOV R0
+    literature: 1.5-2.7 (WHO 2014 NEJM, Legrand 2007). Default 2.0."""
+    _, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, _ = params_tuple
+    T_I = 1.0 / max(gamma_h + gamma_di, 1e-9)
+    T_H = 1.0 / max(gamma_dh + gamma_r, 1e-9)
+    T_F = 1.0 / max(gamma_f, 1e-9)
+    P_H = gamma_h / max(gamma_h + gamma_di, 1e-9)
+    P_F_from_I = gamma_di / max(gamma_h + gamma_di, 1e-9)
+    P_F_from_H = gamma_dh / max(gamma_dh + gamma_r, 1e-9)
+    P_F = P_F_from_I + P_H * P_F_from_H
+
+    denom = T_I + ratio_H * P_H * T_H + ratio_F * P_F * T_F
+    bI = float(R0_target) / max(denom, 1e-9)
+    return float(bI), float(bI * ratio_H), float(bI * ratio_F)
 
 
 SEIHFR_SCENARIO_COLOURS = {
@@ -2571,6 +2597,7 @@ if st.session_state["step"] == "seihfr":
         "death_burial":"https://doi.org/10.1017/S0950268806007217",
         "ratio_F":     "https://doi.org/10.3201/eid1607.090536",
         "ratio_H":     "https://doi.org/10.3201/eid1607.090536",
+        "R0_target":   "https://doi.org/10.1056/NEJMoa1411100",
     }
     DEFAULT_SE_LABEL = {
         "incubation":   "Wamala 2010, CDC Emerging Infect Dis (Bundibugyo)",
@@ -2580,6 +2607,7 @@ if st.session_state["step"] == "seihfr":
         "death_burial": "Legrand 2007, Epidemiol Infect",
         "ratio_F":      "Wamala 2010 — funeral ritual adjusted OR = 3.83",
         "ratio_H":      "Wamala 2010 — hospital visit unadjusted OR = 8.71 (using 2.0 conservatively)",
+        "R0_target":    "WHO Ebola Response Team 2014, NEJM — R₀ 1.71–2.02 (West Africa); Legrand 2007 estimates 2.7 for Kikwit and Gulu",
     }
 
     def se_param(label, default_val, key, min_val, max_val, step,
@@ -2696,15 +2724,17 @@ if st.session_state["step"] == "seihfr":
         death_burial = se_param("Death to burial (days, mean)", 2.0,
                                  "death_burial", 0.5, 14.0, 0.5)
 
-        st.markdown('<div class="section-label">Transmission-route ratios</div>',
+        st.markdown('<div class="section-label">Transmission parameters</div>',
                     unsafe_allow_html=True)
         st.caption(
-            "Wamala 2010 reports the funeral-ritual exposure adjusted OR = 3.83 "
-            "and the hospital-visit unadjusted OR = 8.71. Fixing the ratios of "
-            "β_F/β_I and β_H/β_I lets us fit just one transmission scale (β_I) "
-            "to the sparse data, so the funeral and hospital routes are never "
-            "collapsed to zero."
+            "We derive β_I, β_H, β_F from a literature **R₀** target and "
+            "two Wamala 2010 route ratios. Fitting all three β's to a few "
+            "DON snapshots is under-determined and yields unrealistic R₀ "
+            "(≈6); literature consistently reports EBOV R₀ in 1.5–2.7 "
+            "(Bundibugyo, Zaire, West Africa)."
         )
+        R0_target = se_param("R₀ (basic reproduction number, target)", 2.0,
+                              "R0_target", 0.5, 10.0, 0.1)
         ratio_F = se_param("β_F / β_I  (funeral relative to community)", 3.83,
                             "ratio_F", 0.1, 20.0, 0.1)
         ratio_H = se_param("β_H / β_I  (hospital relative to community)", 2.0,
@@ -2784,7 +2814,7 @@ if st.session_state["step"] == "seihfr":
                             use_container_width=True)
 
         if run_se:
-            with st.spinner("Fitting β's and integrating ODE…"):
+            with st.spinner("Deriving β from R₀ and integrating ODE…"):
                 alpha = 1.0 / max(incub, 0.5)
                 gamma_h = 1.0 / max(onset_hosp, 0.5)
                 gamma_di = 1.0 / max(onset_to_death_used, 0.5)
@@ -2797,18 +2827,12 @@ if st.session_state["step"] == "seihfr":
                     obs_first_cum, float(reporting_rate),
                     alpha, gamma_h, gamma_di, float(N_pop),
                 )
-                try:
-                    bI, bH, bF = seihfr_fit(
-                        obs_cum_arr, params_tuple, y0,
-                        ratio_H=float(ratio_H), ratio_F=float(ratio_F),
-                    )
-                except Exception as e:
-                    st.error(f"Fit failed: {e}")
-                    st.stop()
-
-                R0_derived = (bI / max(gamma_r, 1e-9)
-                              + bH / max(gamma_dh, 1e-9)
-                              + bF / max(gamma_f, 1e-9))
+                bI, bH, bF = seihfr_betas_from_R0(
+                    float(R0_target), params_tuple,
+                    ratio_H=float(ratio_H), ratio_F=float(ratio_F),
+                )
+                # Sanity-check the derived R0 against the formula
+                R0_derived = seihfr_R0(bI, bH, bF, params_tuple)
 
                 scenarios = {
                     "Natural":         (bI * nat_I, bH * nat_H, bF * nat_F),
@@ -2860,15 +2884,15 @@ if st.session_state["step"] == "seihfr":
                 unsafe_allow_html=True,
             )
         else:
-            # Fitted parameters banner
+            # Derived transmission parameters banner
             bI, bH, bF = betas_fit
             st.markdown(
                 f'<div style="padding:0.55rem 0.9rem; '
                 f'border-left:4px solid #1f4e79; background:#f1f5fa; '
                 f'margin:0.4rem 0; font-size:0.88rem;">'
-                f'<b>Fitted β</b>: community = {bI:.3f}, '
-                f'hospital = {bH:.3f}, funeral = {bF:.3f} · '
-                f'<b>Derived R<sub>0</sub></b> = {R0_derived:.2f}'
+                f'<b>R<sub>0</sub></b> = {R0_derived:.2f} (literature) → '
+                f'<b>β</b>: community = {bI:.3f}, hospital = {bH:.3f}, '
+                f'funeral = {bF:.3f}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
