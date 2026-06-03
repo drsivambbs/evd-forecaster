@@ -1202,17 +1202,37 @@ def si_weights(n_days: int, si_mean: float, si_sd: float) -> np.ndarray:
 def estimate_rt(incidence: np.ndarray, si_mean: float, si_sd: float,
                 window: int = 7, shape_prior: float = 1.0,
                 rate_prior: float = 0.2) -> list:
+    """Cori et al. (2013) sliding-window Bayesian R_t estimator.
+
+    For a window of length τ ending at time t:
+        I_window  = Σ_{s=t-τ+1}^{t} I_s        (total cases in window)
+        Λ_window  = Σ_{s=t-τ+1}^{t} Λ_s        (SI-weighted past incidence,
+                                                summed over the SAME window)
+        Λ_s       = Σ_{k=1}^{s} w_k · I_{s-k}
+    Posterior R_t ~ Gamma(α₀ + I_window, β₀ + Λ_window).
+
+    Earlier versions used Λ_t (only at the right-edge day) which under-
+    counts the denominator τ-fold and inflates R_t. This matches the
+    EpiEstim R package and Cori 2013 eq. (4).
+    """
     n = len(incidence)
     weights = si_weights(n, si_mean, si_sd)
+
+    # Precompute Λ_s for every day s in the series, once.
+    lambda_s = np.zeros(n, dtype=float)
+    for s_day in range(n):
+        acc = 0.0
+        s_max = min(s_day, len(weights))
+        for k in range(1, s_max + 1):
+            acc += weights[k - 1] * incidence[s_day - k]
+        lambda_s[s_day] = acc
+
     records = []
     for t in range(window - 1, n):
-        I_t = incidence[t - window + 1: t + 1].sum()
-        Lambda = 0.0
-        for s in range(1, t + 1):
-            if s - 1 < len(weights):
-                Lambda += weights[s - 1] * incidence[t - s]
-        shape_post = shape_prior + I_t
-        rate_post = rate_prior + Lambda
+        I_window = float(incidence[t - window + 1: t + 1].sum())
+        Lambda_window = float(lambda_s[t - window + 1: t + 1].sum())
+        shape_post = shape_prior + I_window
+        rate_post = rate_prior + Lambda_window
         if rate_post > 0:
             rt_mean = shape_post / rate_post
             rt_lower = gamma_dist.ppf(0.025, a=shape_post, scale=1 / rate_post)
@@ -1811,14 +1831,29 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
 # =========================================================================
 def seihfr_ode(y, t, beta_I, beta_H, beta_F, alpha, gamma_h, gamma_di,
                 gamma_dh, gamma_r, gamma_f, N):
+    """SEIHFR compartmental ODE (Legrand et al. 2007 framework).
+
+    I (community-infectious) has THREE competing exit routes — hospitalise
+    (γ_h), die in the community (γ_di), or recover at home (γ_r).
+    H (hospitalised) has TWO exit routes — die (γ_dh) or recover (γ_r).
+    F (funeral / corpse-infectious) flows to R at rate γ_f (burial complete).
+
+    The earlier ODE (porting bug from scripts/seihfr_model.py) dropped the
+    I→R community-recovery pathway, which forced every infectious case to
+    either hospitalise or die in the community — implying an unrealistic
+    overall CFR ≈ 80% versus the Wamala 2010 Bundibugyo value of ~0.34.
+    The single γ_r parameter is used as a shared recovery rate for both
+    community and hospital recovery, in line with parameters.csv where
+    onset_to_recovery_median = 10 d does not distinguish setting.
+    """
     S, E, I, H, F, R_ = y
     foi = (beta_I * I + beta_H * H + beta_F * F) * S / N
     dS = -foi
     dE = foi - alpha * E
-    dI = alpha * E - (gamma_h + gamma_di) * I
+    dI = alpha * E - (gamma_h + gamma_di + gamma_r) * I
     dH = gamma_h * I - (gamma_dh + gamma_r) * H
     dF = gamma_di * I + gamma_dh * H - gamma_f * F
-    dR = gamma_r * H + gamma_f * F
+    dR = gamma_r * I + gamma_r * H + gamma_f * F
     return [dS, dE, dI, dH, dF, dR]
 
 
@@ -1850,27 +1885,43 @@ def seihfr_run(beta_I, beta_H, beta_F, params_tuple, n_days, y0):
 
 
 def seihfr_R0(beta_I, beta_H, beta_F, params_tuple) -> float:
-    """Next-generation R0 for the SEIHFR model (Legrand 2007).
+    """Next-generation R0 for the SEIHFR model (Legrand 2007 framework).
+
+    With the corrected I-stage having THREE exits (h, di, r):
+        T_I = 1 / (γ_h + γ_di + γ_r)   — mean residence time in I
+        T_H = 1 / (γ_dh + γ_r)         — mean residence time in H
+        T_F = 1 / γ_f                  — mean residence time in F
+        P_H        = γ_h  · T_I        — P(I → H)
+        P_F_from_I = γ_di · T_I        — P(I → F directly)
+        P_F_from_H = γ_dh · T_H        — P(H → F)
+        P_F        = P_F_from_I + P_H · P_F_from_H
 
     R0 = β_I · T_I + β_H · P_H · T_H + β_F · P_F · T_F
-    where:
-      T_I = 1 / (γ_h + γ_di)        — mean time in Infectious
-      T_H = 1 / (γ_dh + γ_r)        — mean time in Hospitalised
-      T_F = 1 / γ_f                 — mean time in Funeral
-      P_H = γ_h / (γ_h + γ_di)      — P(infectious case → hospitalised)
-      P_F_from_I = γ_di / (γ_h + γ_di)
-      P_F_from_H = γ_dh / (γ_dh + γ_r)
-      P_F = P_F_from_I + P_H · P_F_from_H
     """
     _, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, _ = params_tuple
-    T_I = 1.0 / max(gamma_h + gamma_di, 1e-9)
+    T_I = 1.0 / max(gamma_h + gamma_di + gamma_r, 1e-9)
     T_H = 1.0 / max(gamma_dh + gamma_r, 1e-9)
     T_F = 1.0 / max(gamma_f, 1e-9)
-    P_H = gamma_h / max(gamma_h + gamma_di, 1e-9)
-    P_F_from_I = gamma_di / max(gamma_h + gamma_di, 1e-9)
-    P_F_from_H = gamma_dh / max(gamma_dh + gamma_r, 1e-9)
+    P_H = gamma_h * T_I
+    P_F_from_I = gamma_di * T_I
+    P_F_from_H = gamma_dh * T_H
     P_F = P_F_from_I + P_H * P_F_from_H
     return (beta_I * T_I + beta_H * P_H * T_H + beta_F * P_F * T_F)
+
+
+def seihfr_CFR(params_tuple) -> float:
+    """Implied case fatality ratio under the current SEIHFR structure.
+
+    CFR = P(I → F) = P_F_from_I + P_H · P_F_from_H.
+    Useful as a sanity check against Wamala 2010 (Bundibugyo CFR ≈ 0.34).
+    """
+    _, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, _ = params_tuple
+    T_I = 1.0 / max(gamma_h + gamma_di + gamma_r, 1e-9)
+    T_H = 1.0 / max(gamma_dh + gamma_r, 1e-9)
+    P_H = gamma_h * T_I
+    P_F_from_I = gamma_di * T_I
+    P_F_from_H = gamma_dh * T_H
+    return P_F_from_I + P_H * P_F_from_H
 
 
 def seihfr_betas_from_R0(R0_target: float, params_tuple,
@@ -1891,12 +1942,14 @@ def seihfr_betas_from_R0(R0_target: float, params_tuple,
     leaves the simulated outbreak near the epidemic threshold. EBOV R0
     literature: 1.5-2.7 (WHO 2014 NEJM, Legrand 2007). Default 2.0."""
     _, gamma_h, gamma_di, gamma_dh, gamma_r, gamma_f, _ = params_tuple
-    T_I = 1.0 / max(gamma_h + gamma_di, 1e-9)
+    # T_I now uses the THREE-exit denominator (h + di + r) consistent with
+    # the corrected ODE.
+    T_I = 1.0 / max(gamma_h + gamma_di + gamma_r, 1e-9)
     T_H = 1.0 / max(gamma_dh + gamma_r, 1e-9)
     T_F = 1.0 / max(gamma_f, 1e-9)
-    P_H = gamma_h / max(gamma_h + gamma_di, 1e-9)
-    P_F_from_I = gamma_di / max(gamma_h + gamma_di, 1e-9)
-    P_F_from_H = gamma_dh / max(gamma_dh + gamma_r, 1e-9)
+    P_H = gamma_h * T_I
+    P_F_from_I = gamma_di * T_I
+    P_F_from_H = gamma_dh * T_H
     P_F = P_F_from_I + P_H * P_F_from_H
 
     denom = T_I + ratio_H * P_H * T_H + ratio_F * P_F * T_F
