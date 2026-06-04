@@ -3543,11 +3543,9 @@ if st.session_state["step"] == "forecast":
     series_dates = pd.to_datetime(series_in["date"])
     last_input_date = series_dates.max()
 
-    # Auto-derived baselines from Step 1 series (last row of cumulative columns)
-    last_row = series_in.iloc[-1]
-    base_conf_default = int(round(float(last_row.get("cumulative_confirmed", 0))))
-    base_susp_default = int(round(float(last_row.get("cumulative_suspected", 0))))
-    base_death_default = int(round(float(last_row.get("cumulative_deaths", 0))))
+    # Baseline defaults are computed *after* the start_date input below so
+    # they track the user's chosen projection start. See "Observed baseline
+    # at start" block.
 
     DEFAULT_FC_SRC = {
         "cfr": "https://doi.org/10.3201/eid1607.090536",
@@ -3624,8 +3622,39 @@ if st.session_state["step"] == "forecast":
             )
 
         # --- Baseline observed cumulative ---
+        # Look up cumulative observed at the SELECTED start_date (not just
+        # the last row of the series). This fixes two prior bugs:
+        #   (a) Baseline ignored start_date — earlier start dates kept
+        #       showing the end-of-series cumulative.
+        #   (b) Stale session state — re-uploading data left old user
+        #       inputs in place because Streamlit cached the prior value.
+        # When the data-derived defaults change (data re-uploaded OR
+        # start_date moved), we clear the cached user inputs so the fields
+        # re-seed from the new data. User edits after that point persist
+        # until the next data/start_date change.
+        _start_ts = pd.Timestamp(start_date)
+        _eligible = series_in[pd.to_datetime(series_in["date"]) <= _start_ts]
+        _base_row = (_eligible.iloc[-1] if len(_eligible)
+                      else series_in.iloc[0])
+        base_conf_default = int(round(float(
+            _base_row.get("cumulative_confirmed", 0))))
+        base_susp_default = int(round(float(
+            _base_row.get("cumulative_suspected", 0))))
+        base_death_default = int(round(float(
+            _base_row.get("cumulative_deaths", 0))))
+        _baseline_sig = (base_conf_default, base_susp_default,
+                          base_death_default)
+        if st.session_state.get("fc_baseline_sig") != _baseline_sig:
+            for _k in ("obs_conf_input", "obs_susp_input", "obs_death_input"):
+                st.session_state.pop(_k, None)
+            st.session_state["fc_baseline_sig"] = _baseline_sig
+
         st.markdown('<div class="section-label">Observed baseline at start</div>',
                     unsafe_allow_html=True)
+        st.caption(
+            f"Auto-filled from your data on {_start_ts:%d-%b-%Y}. "
+            "Edit if you need to override."
+        )
         b1, b2, b3 = st.columns(3)
         with b1:
             obs_conf = st.number_input(
