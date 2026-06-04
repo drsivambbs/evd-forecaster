@@ -966,18 +966,46 @@ def attach_source(df: pd.DataFrame, mode: str, whole: str) -> pd.DataFrame:
 
 def _parse_date_column_strict(df: pd.DataFrame, col: str = "date",
                                where: str = "your file") -> pd.DataFrame:
-    """Parse `col` to datetime. Accepts mixed clean formats (yyyy-mm-dd
-    alongside dd-Mmm-yyyy etc. via format='mixed'). If any value is
-    unparseable, show a clear st.error naming the offending value(s)
-    and halt — no silent dropping."""
-    parsed = pd.to_datetime(df[col], format="mixed", errors="coerce")
-    bad_mask = parsed.isna() & df[col].notna() & (df[col].astype(str).str.strip() != "")
+    """Parse `col` to datetime using ONLY unambiguous formats.
+
+    Order of attempts:
+      1. Pass-through if values are already datetime / date objects
+         (manual-entry path via st.column_config.DateColumn).
+      2. Strict DD-Mmm-YYYY  — e.g. 01-Jan-2026, 29-May-2026.
+      3. Strict ISO YYYY-MM-DD — e.g. 2026-01-29.
+
+    Ambiguous numeric formats like 01/02/2026 are deliberately REJECTED
+    because pandas would silently pick month/day order based on locale,
+    which is the bug the user reported on the Step-1 chart x-axis.
+    Unparseable rows raise an st.error that names the bad values."""
+    raw = df[col]
+    # 1. Already datetime64 → just clone
+    if pd.api.types.is_datetime64_any_dtype(raw):
+        return df.copy()
+    # 2. Object column of Python date/datetime objects (e.g. from
+    #    st.column_config.DateColumn) → convert directly.
+    first = raw.dropna().iloc[0] if raw.notna().any() else None
+    if isinstance(first, (pd.Timestamp, datetime, date)):
+        out = df.copy()
+        out[col] = pd.to_datetime(raw)
+        return out
+    # 3. String parsing — DD-Mmm-YYYY preferred, ISO as fallback.
+    raw_str = raw.astype(str).str.strip()
+    parsed = pd.to_datetime(raw_str, format="%d-%b-%Y", errors="coerce")
+    iso_mask = parsed.isna() & raw.notna()
+    if iso_mask.any():
+        iso_try = pd.to_datetime(raw_str[iso_mask], format="%Y-%m-%d",
+                                  errors="coerce")
+        parsed.loc[iso_mask] = iso_try
+    bad_mask = parsed.isna() & raw.notna() & (raw_str != "")
     if bad_mask.any():
-        bad_rows = df.loc[bad_mask, col].astype(str).head(10).tolist()
+        bad_rows = raw_str[bad_mask].head(10).tolist()
         st.error(
             f"❌ Could not read {int(bad_mask.sum())} date(s) in {where}. "
             f"First bad value(s): {bad_rows}. "
-            f"Accepted formats: 2026-05-29, 29-May-2026, 29/05/2026."
+            f"Please use **DD-Mmm-YYYY** (e.g. 01-Jan-2026, 29-May-2026) "
+            f"or YYYY-MM-DD. Numeric formats like 01/02/2026 are not "
+            f"accepted (ambiguous month/day)."
         )
         st.stop()
     out = df.copy()
@@ -1138,7 +1166,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
             x=series["date"], y=series[col],
             mode="lines", name=label,
             line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%Y-%m-%d}<br>" + label + ": %{y:.1f}<extra></extra>",
+            hovertemplate="%{x|%d-%b-%Y}<br>" + label + ": %{y:.1f}<extra></extra>",
         ))
     fig.update_layout(
         title=dict(text="Daily new cases (interpolated)",
@@ -1151,7 +1179,8 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
+    fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
+                      linecolor="#cfd6df", tickformat="%d-%b-%Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
     return fig
 
@@ -1168,7 +1197,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
             x=series["date"], y=series[col],
             mode="lines", name=f"{label} (interpolated)",
             line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%Y-%m-%d}<br>" + label + ": %{y:.0f}<extra></extra>",
+            hovertemplate="%{x|%d-%b-%Y}<br>" + label + ": %{y:.0f}<extra></extra>",
         ))
 
     if snaps is not None and len(snaps) > 0:
@@ -1185,7 +1214,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         has_source = "source" in snap_sorted.columns
         for col, label in views:
             customdata = snap_sorted["source"] if has_source else [""] * len(snap_sorted)
-            hover = ("%{x|%Y-%m-%d}<br>DON " + label + ": %{y:.0f}"
+            hover = ("%{x|%d-%b-%Y}<br>DON " + label + ": %{y:.0f}"
                      + ("<br>Source: %{customdata}" if has_source else "")
                      + "<extra></extra>")
             fig.add_trace(go.Scatter(
@@ -1209,7 +1238,8 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
+    fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
+                      linecolor="#cfd6df", tickformat="%d-%b-%Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
     return fig
 
@@ -4529,7 +4559,9 @@ with left:
             ][:n_rows] + [""] * max(0, n_rows - 3)
         default_df = pd.DataFrame(default_cols)
 
-        column_config = {"date": st.column_config.DateColumn("Date", required=True)}
+        column_config = {"date": st.column_config.DateColumn(
+            "Date", format="DD-MMM-YYYY", required=True,
+            help="Format: DD-Mmm-YYYY (e.g. 01-Jan-2026)")}
         for col in VALUE_COLS:
             column_config[col] = st.column_config.NumberColumn(
                 VALUE_LABELS[col], min_value=0, step=1, required=True
@@ -4564,12 +4596,16 @@ with left:
         optional_note = " Optional: `source`." if per_row_source else ""
         st.caption(
             f"Required columns: `{', '.join(required)}`." + optional_note
-            + " Date in YYYY-MM-DD."
+            + " **Date format: DD-Mmm-YYYY** (e.g. 01-Jan-2026, "
+            "29-May-2026). YYYY-MM-DD also accepted. Numeric formats "
+            "like 01/02/2026 are rejected (ambiguous month/day)."
         )
         uploaded = st.file_uploader("Upload CSV", type=["csv"])
         if uploaded is not None:
             try:
-                raw_df = pd.read_csv(uploaded, parse_dates=["date"])
+                # Read date column as raw strings — our strict parser
+                # validates the format below.
+                raw_df = pd.read_csv(uploaded, dtype={"date": str})
             except Exception as e:
                 st.error(f"Could not read CSV: {e}")
                 raw_df = None
@@ -4578,9 +4614,13 @@ with left:
                 if missing:
                     st.error(f"CSV missing columns: {missing}")
                 else:
+                    raw_df = _parse_date_column_strict(
+                        raw_df, "date", where="the uploaded CSV")
                     raw_df = raw_df.sort_values("date").reset_index(drop=True)
                     st.success(f"Loaded {len(raw_df)} rows.")
-                    st.dataframe(raw_df.head(8), use_container_width=True, height=220)
+                    preview = raw_df.head(8).copy()
+                    preview["date"] = preview["date"].dt.strftime("%d-%b-%Y")
+                    st.dataframe(preview, use_container_width=True, height=220)
                     if is_cumulative:
                         snapshots = raw_df
                     else:
