@@ -134,8 +134,8 @@ def build_excel_report() -> bytes:
     sections.append((
         "Step 1 — Daily incidence",
         "Built" if series is not None and len(series) > 0 else "Pending",
-        (f"{len(series)} days of incidence ({pd.to_datetime(series['date']).min():%d-%b-%Y} → "
-         f"{pd.to_datetime(series['date']).max():%d-%b-%Y})"
+        (f"{len(series)} days of incidence ({pd.to_datetime(series['date']).min():%d %b %Y} → "
+         f"{pd.to_datetime(series['date']).max():%d %b %Y})"
          if series is not None and len(series) > 0 else "—")
     ))
     if rt_df is not None and not rt_df.empty:
@@ -176,7 +176,7 @@ def build_excel_report() -> bytes:
             lines = []
             for s_name, plc in valid_plc.items():
                 lbl = {"S1": "Delayed", "S2": "Moderate", "S3": "Strong"}.get(s_name, s_name)
-                d = (plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+                d = (plc + pd.Timedelta(days=cross_day)).strftime("%d %b %Y")
                 lines.append(f"{lbl}: P≥{thr:.0%} on {d}")
             sections.append(("Step 4 — End of outbreak", "Built",
                               " · ".join(lines)))
@@ -528,7 +528,7 @@ def build_excel_report() -> bytes:
                 f"{float(_lo('cum_confirmed')[-1]):,.0f} – {float(_hi('cum_confirmed')[-1]):,.0f}",
                 float(med_death[-1]),
                 float(med_new[peak_idx]),
-                horizon_dates[peak_idx].strftime("%d-%b-%Y"),
+                horizon_dates[peak_idx].strftime("%d %b %Y"),
             ]
             for col_i, v in enumerate(cells, start=1):
                 cell = ws.cell(row=row, column=col_i, value=v)
@@ -624,14 +624,14 @@ def build_excel_report() -> bytes:
         scen_lbl = {"S1": "Delayed response", "S2": "Moderate response",
                      "S3": "Strong combined"}
         for s_name, plc in valid_plc.items():
-            cross_date = ((plc + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+            cross_date = ((plc + pd.Timedelta(days=cross_day)).strftime("%d %b %Y")
                            if cross_day is not None else "not reached")
             cells = [
                 scen_lbl.get(s_name, s_name),
-                plc.strftime("%d-%b-%Y"),
-                (plc + pd.Timedelta(days=42)).strftime("%d-%b-%Y"),
-                (plc + pd.Timedelta(days=63)).strftime("%d-%b-%Y"),
-                (plc + pd.Timedelta(days=153)).strftime("%d-%b-%Y"),
+                plc.strftime("%d %b %Y"),
+                (plc + pd.Timedelta(days=42)).strftime("%d %b %Y"),
+                (plc + pd.Timedelta(days=63)).strftime("%d %b %Y"),
+                (plc + pd.Timedelta(days=153)).strftime("%d %b %Y"),
                 cross_date,
             ]
             for col_i, v in enumerate(cells, start=1):
@@ -697,8 +697,8 @@ def build_excel_report() -> bytes:
     if series is not None and len(series):
         narrative.append(
             f"DATA. Daily incidence series covers {len(series)} days "
-            f"({pd.to_datetime(series['date']).min():%d-%b-%Y} → "
-            f"{pd.to_datetime(series['date']).max():%d-%b-%Y}). "
+            f"({pd.to_datetime(series['date']).min():%d %b %Y} → "
+            f"{pd.to_datetime(series['date']).max():%d %b %Y}). "
             f"Cumulative observed: {float(series['cumulative_confirmed'].iloc[-1]):,.0f} "
             f"confirmed, "
             f"{float(series['cumulative_suspected'].iloc[-1]):,.0f} suspected."
@@ -734,7 +734,7 @@ def build_excel_report() -> bytes:
         if len(cross) > 0:
             cross_day = int(eoo_days[cross[0]])
             mid_scen = list(valid_plc.keys())[len(valid_plc) // 2]
-            d = (valid_plc[mid_scen] + pd.Timedelta(days=cross_day)).strftime("%d-%b-%Y")
+            d = (valid_plc[mid_scen] + pd.Timedelta(days=cross_day)).strftime("%d %b %Y")
             narrative.append(
                 f"END OF OUTBREAK. P(extinct) crosses {thr:.0%} on approximately "
                 f"day {cross_day} after the projected last case. Under the "
@@ -971,8 +971,9 @@ def _parse_date_column_strict(df: pd.DataFrame, col: str = "date",
     Order of attempts:
       1. Pass-through if values are already datetime / date objects
          (manual-entry path via st.column_config.DateColumn).
-      2. Strict DD-Mmm-YYYY  — e.g. 01-Jan-2026, 29-May-2026.
-      3. Strict ISO YYYY-MM-DD — e.g. 2026-01-29.
+      2. Strict "DD Mmm YYYY"  — e.g. 01 May 2026, 29 May 2026.
+      3. Strict "DD-Mmm-YYYY"  — backward-compat for older files.
+      4. Strict ISO YYYY-MM-DD — e.g. 2026-05-29.
 
     Ambiguous numeric formats like 01/02/2026 are deliberately REJECTED
     because pandas would silently pick month/day order based on locale,
@@ -989,9 +990,15 @@ def _parse_date_column_strict(df: pd.DataFrame, col: str = "date",
         out = df.copy()
         out[col] = pd.to_datetime(raw)
         return out
-    # 3. String parsing — DD-Mmm-YYYY preferred, ISO as fallback.
+    # 3. String parsing — DD Mmm YYYY preferred, hyphenated and ISO as
+    # backward-compatible fallbacks.
     raw_str = raw.astype(str).str.strip()
-    parsed = pd.to_datetime(raw_str, format="%d-%b-%Y", errors="coerce")
+    parsed = pd.to_datetime(raw_str, format="%d %b %Y", errors="coerce")
+    hy_mask = parsed.isna() & raw.notna()
+    if hy_mask.any():
+        hy_try = pd.to_datetime(raw_str[hy_mask], format="%d-%b-%Y",
+                                 errors="coerce")
+        parsed.loc[hy_mask] = hy_try
     iso_mask = parsed.isna() & raw.notna()
     if iso_mask.any():
         iso_try = pd.to_datetime(raw_str[iso_mask], format="%Y-%m-%d",
@@ -1003,7 +1010,7 @@ def _parse_date_column_strict(df: pd.DataFrame, col: str = "date",
         st.error(
             f"❌ Could not read {int(bad_mask.sum())} date(s) in {where}. "
             f"First bad value(s): {bad_rows}. "
-            f"Please use **DD-Mmm-YYYY** (e.g. 01-Jan-2026, 29-May-2026) "
+            f"Please use **DD Mmm YYYY** (e.g. 01 May 2026, 29 May 2026) "
             f"or YYYY-MM-DD. Numeric formats like 01/02/2026 are not "
             f"accepted (ambiguous month/day)."
         )
@@ -1166,7 +1173,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
             x=series["date"], y=series[col],
             mode="lines", name=label,
             line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%d-%b-%Y}<br>" + label + ": %{y:.1f}<extra></extra>",
+            hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.1f}<extra></extra>",
         ))
     fig.update_layout(
         title=dict(text="Daily new cases (interpolated)",
@@ -1180,7 +1187,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
         plot_bgcolor="white",
     )
     fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
-                      linecolor="#cfd6df", tickformat="%d-%b-%Y")
+                      linecolor="#cfd6df", tickformat="%d %b %Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
     return fig
 
@@ -1197,7 +1204,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
             x=series["date"], y=series[col],
             mode="lines", name=f"{label} (interpolated)",
             line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%d-%b-%Y}<br>" + label + ": %{y:.0f}<extra></extra>",
+            hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.0f}<extra></extra>",
         ))
 
     if snaps is not None and len(snaps) > 0:
@@ -1214,7 +1221,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         has_source = "source" in snap_sorted.columns
         for col, label in views:
             customdata = snap_sorted["source"] if has_source else [""] * len(snap_sorted)
-            hover = ("%{x|%d-%b-%Y}<br>DON " + label + ": %{y:.0f}"
+            hover = ("%{x|%d %b %Y}<br>DON " + label + ": %{y:.0f}"
                      + ("<br>Source: %{customdata}" if has_source else "")
                      + "<extra></extra>")
             fig.add_trace(go.Scatter(
@@ -1239,7 +1246,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         plot_bgcolor="white",
     )
     fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
-                      linecolor="#cfd6df", tickformat="%d-%b-%Y")
+                      linecolor="#cfd6df", tickformat="%d %b %Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
     return fig
 
@@ -1364,7 +1371,7 @@ def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
         mode="lines+markers", name="R_t mean",
         line=dict(color="#8B0000", width=2.4),
         marker=dict(size=6, color="#8B0000"),
-        hovertemplate="%{x|%d-%b-%Y}<br>R_t: %{y:.2f}<extra></extra>",
+        hovertemplate="%{x|%d %b %Y}<br>R_t: %{y:.2f}<extra></extra>",
     ))
 
     sens_subset = rt_df[rt_df["si_mean_used"] != si_mean]
@@ -1378,7 +1385,7 @@ def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
             name=f"Sensitivity (SI = {sens_mean:.1f} d)",
             line=dict(color="#2E8B8B", width=1.8, dash="dash"),
             marker=dict(size=5, color="#2E8B8B"),
-            hovertemplate="%{x|%d-%b-%Y}<br>R_t: %{y:.2f}<extra></extra>",
+            hovertemplate="%{x|%d %b %Y}<br>R_t: %{y:.2f}<extra></extra>",
         ))
 
     if len(primary) > 0:
@@ -1570,7 +1577,7 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
             x=dates, y=traj, mode="lines",
             name=legend_label,
             line=dict(color=SCENARIO_COLOURS[name], width=2.8),
-            hovertemplate=f"<b>{name}</b><br>%{{x|%d-%b-%Y}}<br>"
+            hovertemplate=f"<b>{name}</b><br>%{{x|%d %b %Y}}<br>"
                           "R<sub>t</sub>: %{y:.2f}<extra></extra>",
         ))
         if 0 < target_idx < len(dates):
@@ -1582,7 +1589,7 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
                 showlegend=False,
                 hovertemplate=(
                     f"<b>{name}</b> target reached<br>"
-                    "%{x|%d-%b-%Y}<br>"
+                    "%{x|%d %b %Y}<br>"
                     f"R<sub>t</sub> = {target:.2f}<extra></extra>"
                 ),
             ))
@@ -1689,7 +1696,7 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                 legendgroup=label,
                 showlegend=(col_idx == 1),
                 hovertemplate=(f"<b>{label}</b><br>"
-                               "%{x|%d-%b-%Y}<br>%{y:,.0f}<extra></extra>"),
+                               "%{x|%d %b %Y}<br>%{y:,.0f}<extra></extra>"),
             ), row=1, col=col_idx)
             # Observed baseline marker (dotted horizontal) — only for cumulative
             if not is_daily:
@@ -1851,10 +1858,10 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
         label = RESPONSE_LABELS.get(name, name)
         fig.add_trace(go.Scatter(
             x=dates, y=eoo_probs, mode="lines",
-            name=f"{label} — last case {plc.strftime('%d-%b-%Y')}",
+            name=f"{label} — last case {plc.strftime('%d %b %Y')}",
             line=dict(color=SCENARIO_COLOURS[name], width=2.6),
             hovertemplate=(
-                f"<b>{label}</b><br>%{{x|%d-%b-%Y}}<br>"
+                f"<b>{label}</b><br>%{{x|%d %b %Y}}<br>"
                 "P(extinct): %{y:.3f}<extra></extra>"
             ),
         ))
@@ -2071,7 +2078,7 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
             line=dict(color=colour, width=2.4),
             showlegend=(col_idx == 1),
             legendgroup="true",
-            hovertemplate=("%{x|%d-%b-%Y}<br>True: %{y:,.1f}<extra></extra>"),
+            hovertemplate=("%{x|%d %b %Y}<br>True: %{y:,.1f}<extra></extra>"),
         ), row=1, col=col_idx)
         # Optional confirmed
         if show_confirmed and confirmed_key in data:
@@ -2081,7 +2088,7 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
                 line=dict(color=colour, width=1.8, dash="dash"),
                 showlegend=(col_idx == 1),
                 legendgroup="confirmed",
-                hovertemplate=("%{x|%d-%b-%Y}<br>Confirmed: %{y:,.1f}"
+                hovertemplate=("%{x|%d %b %Y}<br>Confirmed: %{y:,.1f}"
                                 "<extra></extra>"),
             ), row=1, col=col_idx)
         # Optional deaths
@@ -2092,7 +2099,7 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
                 line=dict(color="#2c3e50", width=1.6, dash="dot"),
                 showlegend=(col_idx == 1),
                 legendgroup="deaths",
-                hovertemplate=("%{x|%d-%b-%Y}<br>Deaths: %{y:,.1f}"
+                hovertemplate=("%{x|%d %b %Y}<br>Deaths: %{y:,.1f}"
                                 "<extra></extra>"),
             ), row=1, col=col_idx)
         # Peak marker (on the main true-infections series)
@@ -2103,7 +2110,7 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
             marker=dict(size=9, color=colour,
                          line=dict(color="white", width=1.6)),
             hovertemplate=(
-                "Peak<br>%{x|%d-%b-%Y}<br>%{y:,.1f}<extra></extra>"
+                "Peak<br>%{x|%d %b %Y}<br>%{y:,.1f}<extra></extra>"
             ),
         ), row=1, col=col_idx)
         fig.update_yaxes(type=("log" if y_log else "linear"),
@@ -2848,7 +2855,7 @@ if st.session_state["step"] == "seihfr":
             f'<div style="font-size:0.92rem; font-weight:600; color:#1f4e79; '
             f'margin-top:0.15rem;">{len(series_in)} days</div>'
             f'<div style="font-size:0.72rem; color:#5b6573;">'
-            f'{series_dates.min():%d-%b-%Y} → {series_dates.max():%d-%b-%Y}'
+            f'{series_dates.min():%d %b %Y} → {series_dates.max():%d %b %Y}'
             f'</div></div>',
             unsafe_allow_html=True,
         )
@@ -3150,7 +3157,7 @@ if st.session_state["step"] == "seihfr":
                     f'{SEIHFR_SCENARIO_COLOURS.get(name, "#1f4e79")};">'
                     f'{name}</b> · β = ({BI:.3f}, {BH:.3f}, {BF:.3f})<br>'
                     f'Peak new cases: <b>{peak_val:,.1f}</b>/day on '
-                    f'<b>{peak_day.strftime("%d-%b-%Y")}</b><br>'
+                    f'<b>{peak_day.strftime("%d %b %Y")}</b><br>'
                     f'Final cumulative (model): '
                     f'<b>{final_cum:,.0f}</b> · '
                     f'attack rate: <b>{attack_rate:.2f}%</b>'
@@ -3177,7 +3184,7 @@ if st.session_state["step"] == "seihfr":
                 se_df = pd.DataFrame(rows)
                 preview = se_df.copy()
                 preview["date"] = pd.to_datetime(
-                    preview["date"]).dt.strftime("%d-%b-%Y")
+                    preview["date"]).dt.strftime("%d %b %Y")
                 for c in ["S","E","I","H","F","R","new_cases","cumulative"]:
                     preview[c] = preview[c].round(1)
                 st.dataframe(preview, use_container_width=True, height=320,
@@ -3350,7 +3357,7 @@ if st.session_state["step"] == "eoo":
                     f'<div style="font-size:0.82rem; margin:0.25rem 0;">'
                     f'<span style="color:{SCENARIO_COLOURS[s_name]};">●</span> '
                     f'<b>{label}</b> · projected last case: '
-                    f'<b>{plc.strftime("%d-%b-%Y")}</b>'
+                    f'<b>{plc.strftime("%d %b %Y")}</b>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -3478,7 +3485,7 @@ if st.session_state["step"] == "eoo":
                     cross_date = plc_used + pd.Timedelta(days=cross_day)
                     cross_line = (
                         f'P(extinct) ≥ {thr:.0%}: <b style="color:#1f4e79;">'
-                        f'{cross_date.strftime("%d-%b-%Y")}</b> '
+                        f'{cross_date.strftime("%d %b %Y")}</b> '
                         f'(day {cross_day} after last case)'
                     )
                 else:
@@ -3495,13 +3502,13 @@ if st.session_state["step"] == "eoo":
                     f'line-height:1.55;">'
                     f'<b style="color:{SCENARIO_COLOURS[s_name]};">'
                     f'{RESPONSE_LABELS.get(s_name, s_name)}</b> · '
-                    f'projected last case <b>{plc_used.strftime("%d-%b-%Y")}</b><br>'
+                    f'projected last case <b>{plc_used.strftime("%d %b %Y")}</b><br>'
                     f'WHO 42-day: <b style="color:#E07B39;">'
-                    f'{who_date.strftime("%d-%b-%Y")}</b>  '
+                    f'{who_date.strftime("%d %b %Y")}</b>  '
                     f'· Djaafara prelim (63 d): <b style="color:#1E8449;">'
-                    f'{djaafara_prelim.strftime("%d-%b-%Y")}</b>  '
+                    f'{djaafara_prelim.strftime("%d %b %Y")}</b>  '
                     f'· Djaafara final (+90 d): <b style="color:#1E8449;">'
-                    f'{djaafara_final.strftime("%d-%b-%Y")}</b><br>'
+                    f'{djaafara_final.strftime("%d %b %Y")}</b><br>'
                     f'{cross_line}'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -3524,7 +3531,7 @@ if st.session_state["step"] == "eoo":
                 eoo_df = pd.DataFrame(rows)
                 preview = eoo_df.copy()
                 preview["projected_date"] = pd.to_datetime(
-                    preview["projected_date"]).dt.strftime("%d-%b-%Y")
+                    preview["projected_date"]).dt.strftime("%d %b %Y")
                 st.dataframe(preview, use_container_width=True, height=320,
                              hide_index=True)
                 slug = _slug(st.session_state.get("scenario_name", ""))
@@ -3643,7 +3650,7 @@ if st.session_state["step"] == "forecast":
         f1.markdown(frozen_card(
             "Daily series",
             f"{len(series_in)} days",
-            f"{series_dates.min():%d-%b-%Y} → {last_input_date:%d-%b-%Y}",
+            f"{series_dates.min():%d %b %Y} → {last_input_date:%d %b %Y}",
         ), unsafe_allow_html=True)
         f2.markdown(frozen_card(
             "R_t starting value",
@@ -3711,7 +3718,7 @@ if st.session_state["step"] == "forecast":
         st.markdown('<div class="section-label">Observed baseline at start</div>',
                     unsafe_allow_html=True)
         st.caption(
-            f"Auto-filled from your data on {_start_ts:%d-%b-%Y}. "
+            f"Auto-filled from your data on {_start_ts:%d %b %Y}. "
             "Edit if you need to override."
         )
         b1, b2, b3 = st.columns(3)
@@ -4011,15 +4018,15 @@ if st.session_state["step"] == "forecast":
                     who_eoo_date = last_case_date + pd.Timedelta(days=42)
                     eoo_html = (
                         f'<br><span style="color:#5b6573;">Projected last case: '
-                        f'<b>{last_case_date.strftime("%d-%b-%Y")}</b> · '
+                        f'<b>{last_case_date.strftime("%d %b %Y")}</b> · '
                         f'WHO 42-day EOO declaration: '
                         f'<b style="color:#1f7a3a;">'
-                        f'{who_eoo_date.strftime("%d-%b-%Y")}</b></span>'
+                        f'{who_eoo_date.strftime("%d %b %Y")}</b></span>'
                     )
                 else:
                     eoo_html = (
                         '<br><span style="color:#B22222;">Outbreak still active at '
-                        f'horizon end ({horizon_dates[-1].strftime("%d-%b-%Y")}) '
+                        f'horizon end ({horizon_dates[-1].strftime("%d %b %Y")}) '
                         '— extend horizon to find an end date.</span>'
                     )
 
@@ -4035,7 +4042,7 @@ if st.session_state["step"] == "forecast":
                     f'· Deaths: <b>{d_end:,.0f}</b> '
                     f'<span style="color:#5b6573;">[{d_lo:,.0f}–{d_hi:,.0f}]</span><br>'
                     f'<span style="color:#5b6573;">Peak new confirmed (median): '
-                    f'{peak_val:.1f} on {peak_day.strftime("%d-%b-%Y")} · '
+                    f'{peak_val:.1f} on {peak_day.strftime("%d %b %Y")} · '
                     f'90% PI from {st.session_state.get("fc_n_samples", "?")} '
                     f'posterior draws</span>'
                     f'{eoo_html}'
@@ -4070,7 +4077,7 @@ if st.session_state["step"] == "forecast":
                 fc_df = pd.DataFrame(rows)
                 preview = fc_df.copy()
                 preview["date"] = pd.to_datetime(preview["date"]).dt.strftime(
-                    "%d-%b-%Y")
+                    "%d %b %Y")
                 for c in [col for col in preview.columns
                           if col not in ("date", "scenario")]:
                     preview[c] = preview[c].round(1)
@@ -4324,7 +4331,7 @@ if st.session_state["step"] == "rt":
                     f'background:#fafbfc; margin:0.5rem 0;">'
                     f'<b>Latest R_t</b>: {latest["rt_mean"]:.2f} '
                     f'(95% CrI {latest["rt_lower"]:.2f}–{latest["rt_upper"]:.2f}) '
-                    f'on {pd.to_datetime(latest["date"]).strftime("%d-%b-%Y")} — '
+                    f'on {pd.to_datetime(latest["date"]).strftime("%d %b %Y")} — '
                     f'<b style="color:{color}">{direction} 1</b>, outbreak is '
                     f'<b>{phase}</b>.'
                     f'</div>',
@@ -4402,7 +4409,7 @@ if st.session_state["step"] == "rt":
             # ----- Show table & downloads (collapsed by default) -----
             with st.expander("Show table / data", expanded=False):
                 display = primary[["date", "rt_mean", "rt_lower", "rt_upper"]].copy()
-                display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d-%b-%Y")
+                display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d %b %Y")
                 for c in ["rt_mean", "rt_lower", "rt_upper"]:
                     display[c] = display[c].round(2)
                 display = display.rename(columns={
@@ -4560,8 +4567,8 @@ with left:
         default_df = pd.DataFrame(default_cols)
 
         column_config = {"date": st.column_config.DateColumn(
-            "Date", format="DD-MMM-YYYY", required=True,
-            help="Format: DD-Mmm-YYYY (e.g. 01-Jan-2026)")}
+            "Date", format="DD MMM YYYY", required=True,
+            help="Format: DD Mmm YYYY (e.g. 01 May 2026)")}
         for col in VALUE_COLS:
             column_config[col] = st.column_config.NumberColumn(
                 VALUE_LABELS[col], min_value=0, step=1, required=True
@@ -4596,8 +4603,8 @@ with left:
         optional_note = " Optional: `source`." if per_row_source else ""
         st.caption(
             f"Required columns: `{', '.join(required)}`." + optional_note
-            + " **Date format: DD-Mmm-YYYY** (e.g. 01-Jan-2026, "
-            "29-May-2026). YYYY-MM-DD also accepted. Numeric formats "
+            + " **Date format: DD Mmm YYYY** (e.g. 01 May 2026, "
+            "29 May 2026). YYYY-MM-DD also accepted. Numeric formats "
             "like 01/02/2026 are rejected (ambiguous month/day)."
         )
         uploaded = st.file_uploader("Upload CSV", type=["csv"])
@@ -4619,7 +4626,7 @@ with left:
                     raw_df = raw_df.sort_values("date").reset_index(drop=True)
                     st.success(f"Loaded {len(raw_df)} rows.")
                     preview = raw_df.head(8).copy()
-                    preview["date"] = preview["date"].dt.strftime("%d-%b-%Y")
+                    preview["date"] = preview["date"].dt.strftime("%d %b %Y")
                     st.dataframe(preview, use_container_width=True, height=220)
                     if is_cumulative:
                         snapshots = raw_df
@@ -4689,7 +4696,7 @@ with right:
             st.plotly_chart(_fig_cum, use_container_width=True)
         with tab3:
             display = series[TABLE_COLS].copy()
-            display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d-%b-%Y")
+            display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d %b %Y")
             for col in ["new_confirmed", "new_suspected", "new_deaths"]:
                 display[col] = display[col].round(0).astype(int)
             display = display.rename(columns={
