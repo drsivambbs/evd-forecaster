@@ -964,38 +964,13 @@ def attach_source(df: pd.DataFrame, mode: str, whole: str) -> pd.DataFrame:
     return df
 
 
-def _parse_dates_safe(s: pd.Series, label: str = "date") -> pd.Series:
-    """Robust date parsing for user-uploaded data.
-
-    pandas 2.x infers a strict format from the first row and crashes on
-    later rows that don't match (mixed dd/mm vs yyyy-mm-dd, blank cells,
-    text like "TBD", Excel serials, etc.). We try format='mixed' first,
-    fall back to default inference, and coerce unparseable entries to
-    NaT instead of raising. Warns the user when rows are dropped."""
-    n_in = int(s.notna().sum())
-    try:
-        out = pd.to_datetime(s, errors="coerce", format="mixed",
-                              dayfirst=False)
-    except Exception:
-        out = pd.to_datetime(s, errors="coerce")
-    n_bad = n_in - int(out.notna().sum())
-    if n_bad > 0:
-        st.warning(
-            f"Could not parse {n_bad} value(s) in the '{label}' column — "
-            f"those rows were skipped. Use formats like 2026-05-29, "
-            f"29-May-2026, or 29/05/2026."
-        )
-    return out
-
-
 def interpolate_from_cumulative(snaps: pd.DataFrame) -> pd.DataFrame:
-    snaps = snaps.copy()
-    snaps["date"] = _parse_dates_safe(snaps["date"], "date")
     snaps = snaps.dropna(subset=["date", "cumulative_confirmed",
-                                 "cumulative_suspected", "cumulative_deaths"])
+                                 "cumulative_suspected", "cumulative_deaths"]).copy()
     if len(snaps) < 2:
         return pd.DataFrame()
 
+    snaps["date"] = pd.to_datetime(snaps["date"])
     snaps = snaps.sort_values("date").reset_index(drop=True)
 
     # ------------------------------------------------------------------
@@ -1068,13 +1043,12 @@ def interpolate_from_cumulative(snaps: pd.DataFrame) -> pd.DataFrame:
 
 
 def expand_incidence(inc: pd.DataFrame) -> pd.DataFrame:
-    inc = inc.copy()
-    inc["date"] = _parse_dates_safe(inc["date"], "date")
     inc = inc.dropna(subset=["date", "new_confirmed",
-                             "new_suspected", "new_deaths"])
+                             "new_suspected", "new_deaths"]).copy()
     if len(inc) < 1:
         return pd.DataFrame()
 
+    inc["date"] = pd.to_datetime(inc["date"])
     inc = inc.sort_values("date").reset_index(drop=True)
 
     if len(inc) == 1:
@@ -1175,10 +1149,16 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         ))
 
     if snaps is not None and len(snaps) > 0:
+        # IMPORTANT: convert dates BEFORE sorting. Sorting first treats
+        # string dates lexicographically (e.g. "10-Jan-2026" before
+        # "2-Feb-2026"), which produced an out-of-order x-axis on the
+        # Step 1 cumulative chart.
         snap_sorted = snaps.dropna(
-            subset=["cumulative_confirmed", "cumulative_suspected", "cumulative_deaths"]
-        ).sort_values("date").copy()
+            subset=["cumulative_confirmed", "cumulative_suspected",
+                    "cumulative_deaths"]
+        ).copy()
         snap_sorted["date"] = pd.to_datetime(snap_sorted["date"])
+        snap_sorted = snap_sorted.sort_values("date")
         has_source = "source" in snap_sorted.columns
         for col, label in views:
             customdata = snap_sorted["source"] if has_source else [""] * len(snap_sorted)
@@ -4603,10 +4583,11 @@ with left:
                 inc = attach_source(incidence_df.copy(), source_mode,
                                     whole_table_source)
                 series = expand_incidence(inc)
+                # Convert dates BEFORE sorting — sorting string dates is
+                # lexicographic ("10-Jan-2026" before "2-Feb-2026") and
+                # corrupts the x-axis on the Step 1 chart.
                 inc_sorted = inc.copy()
-                inc_sorted["date"] = _parse_dates_safe(inc_sorted["date"],
-                                                       "date")
-                inc_sorted = inc_sorted.dropna(subset=["date"])
+                inc_sorted["date"] = pd.to_datetime(inc_sorted["date"])
                 inc_sorted = inc_sorted.sort_values("date")
                 chart_snaps = inc_sorted.assign(
                     cumulative_confirmed=inc_sorted["new_confirmed"].cumsum(),
