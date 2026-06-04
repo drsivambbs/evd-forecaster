@@ -1965,10 +1965,16 @@ SEIHFR_SCENARIO_COLOURS = {
 
 
 def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
-                  y_log: bool = False, shared_y: bool = False) -> go.Figure:
+                  y_log: bool = False, shared_y: bool = False,
+                  show_confirmed: bool = False,
+                  show_deaths: bool = False) -> go.Figure:
     """3-panel chart, one panel per scenario, showing daily new cases or
     cumulative. shared_y=False (default) gives each panel its own y-axis
-    so curve shape is visible even when peaks differ by a factor of 5+."""
+    so curve shape is visible even when peaks differ by a factor of 5+.
+
+    show_confirmed adds a dashed line for confirmed (= new_cases × reporting
+    rate). show_deaths adds a dotted line for deaths (flux into Funeral
+    compartment, γ_di·I + γ_dh·H — naturally lagged ~10 d behind cases)."""
     names = list(scenarios_results.keys())
     fig = make_subplots(rows=1, cols=len(names),
                         subplot_titles=[f"<b>{n}</b>" for n in names],
@@ -1976,20 +1982,50 @@ def seihfr_chart(scenarios_results: dict, dates, view: str = "daily",
                         shared_yaxes=bool(shared_y))
     is_daily = view == "daily"
     series_key = "new_cases" if is_daily else "cumulative"
-    ylabel = ("New cases per day" if is_daily else "Cumulative cases")
+    confirmed_key = "confirmed" if is_daily else "cumulative_confirmed"
+    deaths_key = "deaths" if is_daily else "cumulative_deaths"
+    if is_daily:
+        ylabel = "Per day"
+    else:
+        ylabel = "Cumulative"
     if y_log:
         ylabel += " (log)"
 
     for col_idx, name in enumerate(names, start=1):
         data = scenarios_results[name]
         colour = SEIHFR_SCENARIO_COLOURS.get(name, "#1f4e79")
+        # Main "true infections" curve
         fig.add_trace(go.Scatter(
-            x=dates, y=data[series_key], mode="lines", name=name,
+            x=dates, y=data[series_key], mode="lines",
+            name="True infections",
             line=dict(color=colour, width=2.4),
-            showlegend=False,
-            hovertemplate=("%{x|%d-%b-%Y}<br>%{y:,.1f}<extra></extra>"),
+            showlegend=(col_idx == 1),
+            legendgroup="true",
+            hovertemplate=("%{x|%d-%b-%Y}<br>True: %{y:,.1f}<extra></extra>"),
         ), row=1, col=col_idx)
-        # Peak marker
+        # Optional confirmed
+        if show_confirmed and confirmed_key in data:
+            fig.add_trace(go.Scatter(
+                x=dates, y=data[confirmed_key], mode="lines",
+                name="Confirmed",
+                line=dict(color=colour, width=1.8, dash="dash"),
+                showlegend=(col_idx == 1),
+                legendgroup="confirmed",
+                hovertemplate=("%{x|%d-%b-%Y}<br>Confirmed: %{y:,.1f}"
+                                "<extra></extra>"),
+            ), row=1, col=col_idx)
+        # Optional deaths
+        if show_deaths and deaths_key in data:
+            fig.add_trace(go.Scatter(
+                x=dates, y=data[deaths_key], mode="lines",
+                name="Deaths",
+                line=dict(color="#2c3e50", width=1.6, dash="dot"),
+                showlegend=(col_idx == 1),
+                legendgroup="deaths",
+                hovertemplate=("%{x|%d-%b-%Y}<br>Deaths: %{y:,.1f}"
+                                "<extra></extra>"),
+            ), row=1, col=col_idx)
+        # Peak marker (on the main true-infections series)
         peak_idx = int(np.argmax(data[series_key]))
         fig.add_trace(go.Scatter(
             x=[dates[peak_idx]], y=[float(data[series_key][peak_idx])],
@@ -2894,12 +2930,24 @@ if st.session_state["step"] == "seihfr":
                     "Combined":        (bI * cb_I,  bH * cb_H,  bF * cb_F),
                 }
                 results = {}
+                rr = float(reporting_rate)
                 for name, (BI, BH, BF) in scenarios.items():
                     t_arr, sol, nc, cum = seihfr_run(
                         BI, BH, BF, params_tuple, int(n_proj), y0)
+                    # Deaths/day = flux into Funeral compartment
+                    # (γ_di · I + γ_dh · H). Naturally lagged ~10 d behind cases.
+                    deaths = gamma_di * sol[:, 2] + gamma_dh * sol[:, 3]
+                    confirmed = nc * rr
+                    confirmed_deaths = deaths * rr
                     results[name] = {
                         "t": t_arr, "sol": sol,
                         "new_cases": nc, "cumulative": cum,
+                        "confirmed": confirmed,
+                        "cumulative_confirmed": np.cumsum(confirmed),
+                        "deaths": deaths,
+                        "cumulative_deaths": np.cumsum(deaths),
+                        "confirmed_deaths": confirmed_deaths,
+                        "cumulative_confirmed_deaths": np.cumsum(confirmed_deaths),
                         "betas": (BI, BH, BF),
                     }
                 dates_arr = pd.date_range(
@@ -2972,12 +3020,31 @@ if st.session_state["step"] == "seihfr":
                     "3-panel SEIHFR projection. "
                     "Natural = no intervention."
                 )
+            # Second row: optional overlay series
+            ov_a, ov_b, ov_c = st.columns([1, 1, 2])
+            with ov_a:
+                show_confirmed_se = st.toggle(
+                    "Show confirmed", value=False,
+                    key="seihfr_show_confirmed",
+                    help="Adds dashed line = true infections × reporting rate "
+                         f"({float(reporting_rate):.1%}).",
+                )
+            with ov_b:
+                show_deaths_se = st.toggle(
+                    "Show deaths", value=False,
+                    key="seihfr_show_deaths",
+                    help="Adds dotted line = flux into Funeral compartment "
+                         "(γ_di·I + γ_dh·H). Naturally lagged ~10 d behind "
+                         "cases.",
+                )
 
             _fig_se = seihfr_chart(
                 results, dates_arr,
                 view=("daily" if view_mode == "Daily" else "cumulative"),
                 y_log=bool(y_log_se),
                 shared_y=bool(shared_y_se),
+                show_confirmed=bool(show_confirmed_se),
+                show_deaths=bool(show_deaths_se),
             )
             st.session_state["chart_seihfr"] = _fig_se
             st.plotly_chart(_fig_se, use_container_width=True)
