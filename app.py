@@ -964,13 +964,35 @@ def attach_source(df: pd.DataFrame, mode: str, whole: str) -> pd.DataFrame:
     return df
 
 
+def _parse_date_column_strict(df: pd.DataFrame, col: str = "date",
+                               where: str = "your file") -> pd.DataFrame:
+    """Parse `col` to datetime. Accepts mixed clean formats (yyyy-mm-dd
+    alongside dd-Mmm-yyyy etc. via format='mixed'). If any value is
+    unparseable, show a clear st.error naming the offending value(s)
+    and halt — no silent dropping."""
+    parsed = pd.to_datetime(df[col], format="mixed", errors="coerce")
+    bad_mask = parsed.isna() & df[col].notna() & (df[col].astype(str).str.strip() != "")
+    if bad_mask.any():
+        bad_rows = df.loc[bad_mask, col].astype(str).head(10).tolist()
+        st.error(
+            f"❌ Could not read {int(bad_mask.sum())} date(s) in {where}. "
+            f"First bad value(s): {bad_rows}. "
+            f"Accepted formats: 2026-05-29, 29-May-2026, 29/05/2026."
+        )
+        st.stop()
+    out = df.copy()
+    out[col] = parsed
+    return out
+
+
 def interpolate_from_cumulative(snaps: pd.DataFrame) -> pd.DataFrame:
     snaps = snaps.dropna(subset=["date", "cumulative_confirmed",
                                  "cumulative_suspected", "cumulative_deaths"]).copy()
     if len(snaps) < 2:
         return pd.DataFrame()
 
-    snaps["date"] = pd.to_datetime(snaps["date"])
+    snaps = _parse_date_column_strict(snaps, "date",
+                                       where="the cumulative snapshots")
     snaps = snaps.sort_values("date").reset_index(drop=True)
 
     # ------------------------------------------------------------------
@@ -1048,7 +1070,8 @@ def expand_incidence(inc: pd.DataFrame) -> pd.DataFrame:
     if len(inc) < 1:
         return pd.DataFrame()
 
-    inc["date"] = pd.to_datetime(inc["date"])
+    inc = _parse_date_column_strict(inc, "date",
+                                     where="the incidence file")
     inc = inc.sort_values("date").reset_index(drop=True)
 
     if len(inc) == 1:
@@ -4586,8 +4609,8 @@ with left:
                 # Convert dates BEFORE sorting — sorting string dates is
                 # lexicographic ("10-Jan-2026" before "2-Feb-2026") and
                 # corrupts the x-axis on the Step 1 chart.
-                inc_sorted = inc.copy()
-                inc_sorted["date"] = pd.to_datetime(inc_sorted["date"])
+                inc_sorted = _parse_date_column_strict(
+                    inc, "date", where="the incidence file")
                 inc_sorted = inc_sorted.sort_values("date")
                 chart_snaps = inc_sorted.assign(
                     cumulative_confirmed=inc_sorted["new_confirmed"].cumsum(),
