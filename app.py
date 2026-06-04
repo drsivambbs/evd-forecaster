@@ -2089,7 +2089,11 @@ if st.session_state["step"] == "eoo" and (
     st.session_state["step"] = "data"
 if st.session_state["step"] == "seihfr" and (
     st.session_state.get("result_series") is None
+    or st.session_state.get("rt_df") is None
+    or st.session_state.get("fc_scenarios") is None
 ):
+    # SEIHFR is now Step 4 (after Forecast). Require all upstream steps
+    # so the linear wizard flow holds.
     st.session_state["step"] = "data"
 
 # Step indicator (5 steps)
@@ -2105,8 +2109,8 @@ step_html = (
     'flex-wrap:wrap;">'
     + _pill("Step 1 · Daily incidence", step_now == "data")
     + _pill("Step 2 · R_t estimation", step_now == "rt")
-    + _pill("Step 3 · SEIHFR (optional)", step_now == "seihfr")
-    + _pill("Step 4 · Forecast", step_now == "forecast")
+    + _pill("Step 3 · Forecast", step_now == "forecast")
+    + _pill("Step 4 · SEIHFR (optional)", step_now == "seihfr")
     + _pill("Step 5 · End of outbreak", step_now == "eoo")
     + '</div>'
 )
@@ -2975,8 +2979,8 @@ if st.session_state["step"] == "seihfr":
                         unsafe_allow_html=True)
         with top_row[1]:
             if st.button("← Back", use_container_width=True,
-                          key="back_to_rt_from_seihfr"):
-                st.session_state["step"] = "rt"
+                          key="back_to_forecast_from_seihfr"):
+                st.session_state["step"] = "forecast"
                 st.rerun()
 
         results = st.session_state.get("seihfr_results")
@@ -3127,11 +3131,11 @@ if st.session_state["step"] == "seihfr":
                     use_container_width=True,
                 )
 
-            # Next: Forecast (Step 4)
-            if st.button("Next: Step 4 — Forecast  →", type="primary",
+            # Next: End-of-outbreak (Step 5)
+            if st.button("Next: Step 5 — End-of-outbreak  →", type="primary",
                           use_container_width=True,
-                          key="goto_forecast_from_seihfr"):
-                st.session_state["step"] = "forecast"
+                          key="goto_eoo_from_seihfr"):
+                st.session_state["step"] = "eoo"
                 st.rerun()
 
     # Method note + equations
@@ -3992,11 +3996,20 @@ if st.session_state["step"] == "forecast":
                     use_container_width=True,
                 )
 
-            # Next: end of outbreak
-            if st.button("Next: End-of-outbreak  →", type="primary",
-                         use_container_width=True, key="goto_eoo"):
-                st.session_state["step"] = "eoo"
-                st.rerun()
+            # Two next buttons: optional SEIHFR side-step, or direct to EOO
+            nxt_l, nxt_r = st.columns(2)
+            with nxt_l:
+                if st.button("Step 4: SEIHFR (optional)  →",
+                              use_container_width=True,
+                              key="goto_seihfr_from_forecast"):
+                    st.session_state["step"] = "seihfr"
+                    st.rerun()
+            with nxt_r:
+                if st.button("Skip → Step 5: End-of-outbreak  →",
+                              type="primary", use_container_width=True,
+                              key="goto_eoo"):
+                    st.session_state["step"] = "eoo"
+                    st.rerun()
 
     # Method note + equations
     with st.expander("📐 Method & equations — Renewal-equation forecast "
@@ -4291,20 +4304,12 @@ if st.session_state["step"] == "rt":
                 st.session_state["selected_rt"] = selected_rt
                 st.session_state["selected_rt_basis"] = preset
 
-                # Two next buttons: optional SEIHFR side-step, or direct to forecast
-                nxt_l, nxt_r = st.columns(2)
-                with nxt_l:
-                    if st.button("Step 3: SEIHFR (optional)  →",
-                                  use_container_width=True,
-                                  key="goto_seihfr_from_rt"):
-                        st.session_state["step"] = "seihfr"
-                        st.rerun()
-                with nxt_r:
-                    if st.button("Skip → Step 4: Forecast  →", type="primary",
-                                  use_container_width=True,
-                                  key="goto_forecast"):
-                        st.session_state["step"] = "forecast"
-                        st.rerun()
+                # Next: Forecast (SEIHFR is now an optional Step 4 after Forecast)
+                if st.button("Next: Step 3 — Forecast  →", type="primary",
+                              use_container_width=True,
+                              key="goto_forecast"):
+                    st.session_state["step"] = "forecast"
+                    st.rerun()
 
             # ----- Show table & downloads (collapsed by default) -----
             with st.expander("Show table / data", expanded=False):
