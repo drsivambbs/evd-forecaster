@@ -1249,8 +1249,17 @@ def estimate_rt(incidence: np.ndarray, si_mean: float, si_sd: float,
 def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
                      window: int, shape_prior: float, rate_prior: float,
                      run_sensitivity: bool, sens_mean: float,
-                     sens_sd: float) -> pd.DataFrame:
-    incidence = daily["new_confirmed"].astype(float).values
+                     sens_sd: float,
+                     incidence_source: str = "confirmed") -> pd.DataFrame:
+    """Build per-day R_t estimates. `incidence_source` selects which series
+    feeds the Cori estimator:
+      - "confirmed" (default): daily["new_confirmed"] — lab-confirmed only,
+        consistent with WHO surveillance reporting. Recommended.
+      - "suspected": daily["new_suspected"] — broader, but only ~TPR fraction
+        are true positives. Use as a sensitivity check; R_t can look biased
+        high or noisier."""
+    col = "new_suspected" if incidence_source == "suspected" else "new_confirmed"
+    incidence = daily[col].astype(float).values
     dates = pd.to_datetime(daily["date"]).values
     if len(incidence) < window:
         return pd.DataFrame()
@@ -1262,7 +1271,8 @@ def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
         result_dates,
     ):
         rows.append({"date": d, **rec, "si_mean_used": si_mean,
-                     "window_size": window})
+                     "window_size": window,
+                     "incidence_source": incidence_source})
 
     if run_sensitivity:
         for rec, d in zip(
@@ -1270,7 +1280,8 @@ def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
             result_dates,
         ):
             rows.append({"date": d, **rec, "si_mean_used": sens_mean,
-                         "window_size": window})
+                         "window_size": window,
+                         "incidence_source": incidence_source})
 
     return pd.DataFrame(rows)
 
@@ -4101,6 +4112,26 @@ if st.session_state["step"] == "rt":
         st.markdown('<div class="panel-title">R_t inputs</div>',
                     unsafe_allow_html=True)
 
+        st.markdown('<div class="section-label">Incidence source</div>',
+                    unsafe_allow_html=True)
+        incidence_source_label = st.radio(
+            "Which series drives R_t?",
+            ["Confirmed", "Suspected"],
+            index=0 if st.session_state.get(
+                "rt_incidence_source", "confirmed") == "confirmed" else 1,
+            horizontal=True,
+            key="rt_incidence_source_label",
+            help="Confirmed (default, recommended): lab-confirmed cases, "
+                 "consistent with WHO surveillance. "
+                 "Suspected: broader case definition — only ~TPR fraction "
+                 "are true positives, so R_t can look biased high or "
+                 "noisier. Use as a sensitivity check.",
+        )
+        incidence_source = ("suspected"
+                            if incidence_source_label == "Suspected"
+                            else "confirmed")
+        st.session_state["rt_incidence_source"] = incidence_source
+
         st.markdown('<div class="section-label">Serial interval (primary)</div>',
                     unsafe_allow_html=True)
         si_mean = param_with_source("SI mean (days)", 15.3, "si_mean_primary",
@@ -4144,7 +4175,8 @@ if st.session_state["step"] == "rt":
         if run_rt:
             rt_df = compute_rt_table(series_in, si_mean, si_sd, int(window),
                                      shape_prior, rate_prior,
-                                     run_sens, sens_mean, sens_sd)
+                                     run_sens, sens_mean, sens_sd,
+                                     incidence_source=incidence_source)
             if rt_df.empty:
                 st.warning(
                     f"Not enough data — need at least {int(window)} days of incidence."
