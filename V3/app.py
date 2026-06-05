@@ -2660,6 +2660,23 @@ if st.session_state["step"] == "help":
         "The web link or paper reference for that row's data. Lets reviewers verify "
         "your numbers.",
     )
+    gentry(
+        "CFR Backcalculation (optional)",
+        "CFR 24% / 30% / 40% / Custom; SMA None / 3 / 5 / 7-day",
+        "Estimates true incidence from observed deaths under the assumption that "
+        "deaths are better counted than cases. Cumulative deaths divided by the CFR "
+        "gives a naive estimate; the phase-bias multiplier "
+        "(1 + r/β)<sup>α</sup> corrects it for the fact that during exponential "
+        "growth most recent cases have not yet died. r = ln(2)/t<sub>2</sub> is the "
+        "epidemic growth rate; (α, β) are the Gamma onset-to-death shape and rate. "
+        "The user picks whether the resulting series substitutes for confirmed, "
+        "suspected, or both (Total cases) in Steps 2–4. (Garske et al. 2009; "
+        "Imperial College methodology.)",
+        "A way to estimate the true number of cases by working backwards from deaths. "
+        "If <b>X</b>% of cases die, then dividing deaths by <b>X</b>% gives an "
+        "estimate of total cases — adjusted for the fact that recent cases haven't "
+        "had time to die yet. Useful when you suspect cases are under-reported.",
+    )
 
     # ---------- Step 2 ----------
     st.markdown(
