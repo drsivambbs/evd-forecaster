@@ -3295,6 +3295,19 @@ if st.session_state["step"] == "eoo":
     rt_shape_post = float(latest.get("shape_post", 1.0 + rt_mean_latest))
     rt_rate_post = float(latest.get("rate_post",
                                      max(1e-6, rt_shape_post / rt_mean_latest)))
+
+    # Anchor on the R_t the user selected in Step 2 (Latest / Mean 7d /
+    # Median / Mean all / Custom), not the time-series last row. We keep
+    # the latest window's posterior *dispersion* and rescale so the mean
+    # matches selected_rt — same trick used by Step 3 (Forecast) at the
+    # rt_samples block. For Gamma(shape, rate), scaling X by c gives
+    # Gamma(shape, rate / c); choosing c = selected_rt / rt_mean_latest
+    # moves the mean to selected_rt while preserving shape.
+    rt_selected = float(st.session_state.get("selected_rt", rt_mean_latest))
+    rt_basis = st.session_state.get("selected_rt_basis", "Latest")
+    if rt_mean_latest > 0 and rt_selected > 0:
+        _scale = rt_selected / rt_mean_latest
+        rt_rate_post = rt_rate_post / _scale
     si_sd_used = float(st.session_state.get("si_sd_primary_val", 9.3))
 
     def projected_last_case(scen_key: str):
@@ -3315,18 +3328,24 @@ if st.session_state["step"] == "eoo":
 
         st.markdown('<div class="section-label">Locked from previous steps</div>',
                     unsafe_allow_html=True)
+        # CrI bounds from the latest window, rescaled by the same factor
+        # that moves the mean to rt_selected (Gamma quantiles scale linearly).
+        _cri_scale = (rt_selected / rt_mean_latest
+                      if rt_mean_latest > 0 else 1.0)
+        _cri_lower = float(latest["rt_lower"]) * _cri_scale
+        _cri_upper = float(latest["rt_upper"]) * _cri_scale
         f1, f2 = st.columns(2)
         f1.markdown(
             f'<div style="border:1px solid #d8dde4; background:#f6f8fb; '
             f'border-radius:6px; padding:0.5rem 0.7rem;">'
             f'<div style="font-size:0.7rem; color:#5b6573; '
             f'text-transform:uppercase; letter-spacing:0.05em;">'
-            f'🔒 Latest R_t</div>'
+            f'🔒 Selected R_t (Step 2)</div>'
             f'<div style="font-size:0.95rem; font-weight:600; color:#1f4e79; '
-            f'margin-top:0.15rem;">{rt_mean_latest:.2f}</div>'
+            f'margin-top:0.15rem;">{rt_selected:.2f}</div>'
             f'<div style="font-size:0.72rem; color:#5b6573;">'
-            f'95% CrI: {float(latest["rt_lower"]):.2f}–'
-            f'{float(latest["rt_upper"]):.2f}</div>'
+            f'basis: {rt_basis} · 95% CrI (rescaled): '
+            f'{_cri_lower:.2f}–{_cri_upper:.2f}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -3335,12 +3354,13 @@ if st.session_state["step"] == "eoo":
             f'border-radius:6px; padding:0.5rem 0.7rem;">'
             f'<div style="font-size:0.7rem; color:#5b6573; '
             f'text-transform:uppercase; letter-spacing:0.05em;">'
-            f'R_t Gamma posterior</div>'
+            f'R_t Gamma posterior (rescaled)</div>'
             f'<div style="font-size:0.95rem; font-weight:600; color:#1f4e79; '
             f'margin-top:0.15rem;">'
             f'shape={rt_shape_post:.2f}, rate={rt_rate_post:.2f}</div>'
             f'<div style="font-size:0.72rem; color:#5b6573;">'
-            f'sampled per realisation (no Normal SD approx)</div>'
+            f'mean anchored on selected R_t; latest-window dispersion '
+            f'preserved · sampled per realisation</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
