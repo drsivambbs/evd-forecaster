@@ -928,6 +928,25 @@ TPR = 0.192  # test positivity rate used in data_prep.py
 TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 
+def cfr_active_badge():
+    """Render a banner on Steps 2-4 whenever Step 1's CFR backcalculation
+    is active, so the user knows downstream inputs are CFR-sourced."""
+    if not st.session_state.get("cfr_active"):
+        return
+    pct = st.session_state.get("cfr_pct_active", "?")
+    role = st.session_state.get("cfr_role_active", "Total cases")
+    st.markdown(
+        f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
+        f'background:#f3e7fb; border-left:4px solid #6a1b9a; '
+        f'border-radius:5px; font-size:0.85rem; color:#3b1455;">'
+        f'<b>CFR backcalculation active</b> — '
+        f'CFR = {pct}%, treated as <b>{role}</b>. '
+        f'Inputs below are sourced from estimated true cases.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # Keys whose persistence is tracked across step navigation. These keys hold
 # inputs/widget values that survive switching between Step 1/2/3/4/help; the
 # Reset all button clears them.
@@ -1162,6 +1181,49 @@ def expand_incidence(inc: pd.DataFrame) -> pd.DataFrame:
     return daily[out_cols]
 
 
+# =========================================================================
+# CFR backcalculation (Imperial College / Garske et al. style)
+# =========================================================================
+# Phase-bias multiplier (1 + r/β)^α corrects naive deaths/CFR for the fact
+# that during an exponentially growing epidemic many recent cases have not
+# yet died — so deaths reflect older, smaller incidence cohorts. r is the
+# epidemic growth rate (log(2)/doubling-time); (α, β) parametrise the
+# Gamma onset-to-death distribution.
+# -------------------------------------------------------------------------
+def cfr_backcalculate(series: pd.DataFrame, cfr_pct: float,
+                      doubling_time: float, alpha: float, beta: float,
+                      sma_window: int = 0) -> pd.DataFrame:
+    out = series.copy()
+    if "cumulative_deaths" not in out.columns:
+        out["cumulative_deaths"] = out["new_deaths"].cumsum()
+
+    r = np.log(2.0) / float(doubling_time)
+    phase_bias = (1.0 + r / float(beta)) ** float(alpha)
+
+    cum_est = (out["cumulative_deaths"].astype(float) * phase_bias) \
+              / (float(cfr_pct) / 100.0)
+    out["cumulative_cfr_estimated"] = cum_est.round().astype(int)
+
+    new_est = out["cumulative_cfr_estimated"].diff()
+    new_est.iloc[0] = out["cumulative_cfr_estimated"].iloc[0]
+    out["new_cfr_estimated"] = new_est.astype(int)
+
+    if sma_window and int(sma_window) >= 2:
+        w = int(sma_window)
+        out["new_deaths_sma"] = (
+            out["new_deaths"].rolling(window=w, min_periods=1).mean()
+        )
+        out["new_cfr_estimated_sma"] = (
+            out["new_cfr_estimated"].rolling(window=w, min_periods=1).mean()
+        )
+
+    out.attrs["cfr_phase_bias"] = float(phase_bias)
+    out.attrs["cfr_growth_rate"] = float(r)
+    out.attrs["cfr_pct"] = float(cfr_pct)
+    out.attrs["cfr_sma_window"] = int(sma_window) if sma_window else 0
+    return out
+
+
 def daily_chart(series: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     for col, label in [
@@ -1174,6 +1236,27 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
             mode="lines", name=label,
             line=dict(color=COLOURS[col], width=2.2),
             hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.1f}<extra></extra>",
+        ))
+    if "new_cfr_estimated" in series.columns:
+        fig.add_trace(go.Scatter(
+            x=series["date"], y=series["new_cfr_estimated"],
+            mode="lines", name="CFR-estimated true new cases",
+            line=dict(color="#6a1b9a", width=2.4, dash="solid"),
+            hovertemplate="%{x|%d %b %Y}<br>CFR estimate: %{y:.0f}<extra></extra>",
+        ))
+    if "new_cfr_estimated_sma" in series.columns:
+        fig.add_trace(go.Scatter(
+            x=series["date"], y=series["new_cfr_estimated_sma"],
+            mode="lines", name="CFR estimate (SMA)",
+            line=dict(color="#6a1b9a", width=1.6, dash="dash"),
+            hovertemplate="%{x|%d %b %Y}<br>CFR estimate (SMA): %{y:.1f}<extra></extra>",
+        ))
+    if "new_deaths_sma" in series.columns:
+        fig.add_trace(go.Scatter(
+            x=series["date"], y=series["new_deaths_sma"],
+            mode="lines", name="New deaths (SMA)",
+            line=dict(color=COLOURS["new_deaths"], width=1.4, dash="dash"),
+            hovertemplate="%{x|%d %b %Y}<br>Deaths (SMA): %{y:.1f}<extra></extra>",
         ))
     fig.update_layout(
         title=dict(text="Daily new cases (interpolated)",
@@ -1205,6 +1288,13 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
             mode="lines", name=f"{label} (interpolated)",
             line=dict(color=COLOURS[col], width=2.2),
             hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.0f}<extra></extra>",
+        ))
+    if "cumulative_cfr_estimated" in series.columns:
+        fig.add_trace(go.Scatter(
+            x=series["date"], y=series["cumulative_cfr_estimated"],
+            mode="lines", name="CFR-estimated true cumulative cases",
+            line=dict(color="#6a1b9a", width=2.4),
+            hovertemplate="%{x|%d %b %Y}<br>CFR cumulative: %{y:.0f}<extra></extra>",
         ))
 
     if snaps is not None and len(snaps) > 0:
@@ -1323,8 +1413,15 @@ def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
         consistent with WHO surveillance reporting. Recommended.
       - "suspected": daily["new_suspected"] — broader, but only ~TPR fraction
         are true positives. Use as a sensitivity check; R_t can look biased
-        high or noisier."""
-    col = "new_suspected" if incidence_source == "suspected" else "new_confirmed"
+        high or noisier.
+      - "cfr": daily["new_cfr_estimated"] — CFR-backcalculated true incidence
+        (only present when the Step 1 CFR toggle is on)."""
+    if incidence_source == "cfr" and "new_cfr_estimated" in daily.columns:
+        col = "new_cfr_estimated"
+    elif incidence_source == "suspected":
+        col = "new_suspected"
+    else:
+        col = "new_confirmed"
     incidence = daily[col].astype(float).values
     dates = pd.to_datetime(daily["date"]).values
     if len(incidence) < window:
@@ -2826,10 +2923,19 @@ if st.session_state["step"] == "seihfr":
         return val
 
     series_dates = pd.to_datetime(series_in["date"])
-    # Trim back-extrapolated leading-zero rows for SEIHFR seeding — keeping
-    # them makes the initial conditions degenerate (I0 ≈ 0) and the model
-    # can't reproduce the observed rise.
-    obs_cum_full = series_in["cumulative_confirmed"].astype(float).values
+    # CFR backcalculation override (Step 1): when active and role is
+    # Confirmed or Total cases, SEIHFR seeds from the CFR-estimated cumulative
+    # instead of cumulative_confirmed. Role=Suspected is left alone.
+    _cfr_role_se = st.session_state.get("cfr_role_active", "Total cases")
+    if (st.session_state.get("cfr_active")
+            and "cumulative_cfr_estimated" in series_in.columns
+            and _cfr_role_se in ("Total cases", "Confirmed")):
+        obs_cum_full = series_in["cumulative_cfr_estimated"].astype(float).values
+    else:
+        # Trim back-extrapolated leading-zero rows for SEIHFR seeding — keeping
+        # them makes the initial conditions degenerate (I0 ≈ 0) and the model
+        # can't reproduce the observed rise.
+        obs_cum_full = series_in["cumulative_confirmed"].astype(float).values
     _nz = np.where(obs_cum_full > 0)[0]
     _start_idx = int(_nz[0]) if len(_nz) > 0 else 0
     obs_cum_arr = obs_cum_full[_start_idx:]
@@ -2841,6 +2947,7 @@ if st.session_state["step"] == "seihfr":
     with left5:
         st.markdown('<div class="panel-title">SEIHFR inputs</div>',
                     unsafe_allow_html=True)
+        cfr_active_badge()
 
         # Locked from earlier steps
         st.markdown('<div class="section-label">Locked from previous steps</div>',
@@ -3325,6 +3432,7 @@ if st.session_state["step"] == "eoo":
     with left4:
         st.markdown('<div class="panel-title">EOO inputs</div>',
                     unsafe_allow_html=True)
+        cfr_active_badge()
 
         st.markdown('<div class="section-label">Locked from previous steps</div>',
                     unsafe_allow_html=True)
@@ -3662,6 +3770,7 @@ if st.session_state["step"] == "forecast":
     with left3:
         st.markdown('<div class="panel-title">Forecast inputs</div>',
                     unsafe_allow_html=True)
+        cfr_active_badge()
 
         # --- Frozen inputs ---
         st.markdown('<div class="section-label">Locked from previous steps</div>',
@@ -3871,6 +3980,20 @@ if st.session_state["step"] == "forecast":
             horizon_int = int(horizon)
             seed_conf = series_in["new_confirmed"].astype(float).values
             seed_susp = series_in["new_suspected"].astype(float).values
+
+            # CFR backcalculation override (from Step 1). If active, substitute
+            # the estimated true-case series into the role chosen by the user.
+            if (st.session_state.get("cfr_active")
+                    and "new_cfr_estimated" in series_in.columns):
+                cfr_est = series_in["new_cfr_estimated"].astype(float).values
+                role = st.session_state.get("cfr_role_active", "Total cases")
+                if role == "Confirmed":
+                    seed_conf = cfr_est
+                elif role == "Suspected":
+                    seed_susp = cfr_est
+                else:  # Total cases
+                    seed_conf = cfr_est
+                    seed_susp = np.zeros_like(cfr_est)
 
             # --- Sample R_t starting values from the Cori Gamma posterior ---
             # The user picked a preset (Latest / Mean 7d / etc.) in Step 2,
@@ -4239,25 +4362,52 @@ if st.session_state["step"] == "rt":
     with left2:
         st.markdown('<div class="panel-title">R_t inputs</div>',
                     unsafe_allow_html=True)
+        cfr_active_badge()
 
         st.markdown('<div class="section-label">Incidence source</div>',
                     unsafe_allow_html=True)
+        cfr_on = (st.session_state.get("cfr_active", False)
+                  and "new_cfr_estimated" in series_in.columns)
+        cfr_role_active = st.session_state.get("cfr_role_active", "Total cases")
+        if cfr_on:
+            options = ["Confirmed", "Suspected", "CFR-estimated"]
+            if cfr_role_active == "Total cases":
+                default_label = "CFR-estimated"
+            elif cfr_role_active == "Suspected":
+                default_label = "Suspected"
+            else:
+                default_label = "Confirmed"
+            prev = st.session_state.get("rt_incidence_source_label",
+                                        default_label)
+            if prev not in options:
+                prev = default_label
+            help_text = (
+                "Confirmed: lab-confirmed cases. "
+                "Suspected: broader case definition (only ~TPR true positives). "
+                "CFR-estimated: true cases backcalculated from deaths in Step 1."
+            )
+        else:
+            options = ["Confirmed", "Suspected"]
+            prev = "Confirmed" if st.session_state.get(
+                "rt_incidence_source", "confirmed") == "confirmed" else "Suspected"
+            help_text = (
+                "Confirmed (default, recommended): lab-confirmed cases, "
+                "consistent with WHO surveillance. "
+                "Suspected: broader case definition — only ~TPR fraction "
+                "are true positives, so R_t can look biased high or noisier. "
+                "Use as a sensitivity check."
+            )
         incidence_source_label = st.radio(
             "Which series drives R_t?",
-            ["Confirmed", "Suspected"],
-            index=0 if st.session_state.get(
-                "rt_incidence_source", "confirmed") == "confirmed" else 1,
+            options,
+            index=options.index(prev),
             horizontal=True,
             key="rt_incidence_source_label",
-            help="Confirmed (default, recommended): lab-confirmed cases, "
-                 "consistent with WHO surveillance. "
-                 "Suspected: broader case definition — only ~TPR fraction "
-                 "are true positives, so R_t can look biased high or "
-                 "noisier. Use as a sensitivity check.",
+            help=help_text,
         )
-        incidence_source = ("suspected"
-                            if incidence_source_label == "Suspected"
-                            else "confirmed")
+        incidence_source = {"Confirmed": "confirmed",
+                            "Suspected": "suspected",
+                            "CFR-estimated": "cfr"}[incidence_source_label]
         st.session_state["rt_incidence_source"] = incidence_source
 
         st.markdown('<div class="section-label">Serial interval (primary)</div>',
@@ -4653,6 +4803,94 @@ with left:
                     else:
                         incidence_df = raw_df
 
+    # ------------------------------------------------------------------
+    # CFR backcalculation controls (Imperial / Garske et al.)
+    # ------------------------------------------------------------------
+    st.markdown('<div class="section-label">CFR backcalculation</div>',
+                unsafe_allow_html=True)
+    cfr_enabled = st.checkbox(
+        "Enable CFR Backcalculation Method",
+        value=st.session_state.get("cfr_enabled", False),
+        key="cfr_enabled",
+        help="Estimates the true number of cases from observed deaths, "
+             "applying a phase-bias correction (1 + r/β)^α to compensate "
+             "for the lag between case onset and death during a growing "
+             "epidemic.",
+    )
+
+    cfr_pct = 30.0
+    cfr_sma = 0
+    cfr_role = "Total cases"
+    cfr_t2 = 14.0
+    cfr_alpha = 4.42
+    cfr_beta = 0.388
+
+    if cfr_enabled:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            cfr_choice = st.radio(
+                "CFR scenario",
+                ["24%", "30%", "40%", "Custom"],
+                index=["24%", "30%", "40%", "Custom"].index(
+                    st.session_state.get("cfr_choice", "30%")),
+                key="cfr_choice",
+                horizontal=False,
+            )
+            if cfr_choice == "Custom":
+                cfr_pct = st.number_input(
+                    "Custom CFR (%)",
+                    min_value=0.1, max_value=100.0,
+                    value=float(st.session_state.get("cfr_pct_custom", 30.0)),
+                    step=0.5, key="cfr_pct_custom",
+                )
+            else:
+                cfr_pct = float(cfr_choice.rstrip("%"))
+        with col_b:
+            sma_label = st.selectbox(
+                "SMA Smoothing",
+                ["None", "3-Day", "5-Day", "7-Day"],
+                index=["None", "3-Day", "5-Day", "7-Day"].index(
+                    st.session_state.get("cfr_sma_label", "None")),
+                key="cfr_sma_label",
+            )
+            cfr_sma = {"None": 0, "3-Day": 3,
+                       "5-Day": 5, "7-Day": 7}[sma_label]
+
+        cfr_role = st.radio(
+            "Treat estimated cases as",
+            ["Total cases", "Confirmed", "Suspected"],
+            index=["Total cases", "Confirmed", "Suspected"].index(
+                st.session_state.get("cfr_role", "Total cases")),
+            horizontal=True,
+            key="cfr_role",
+            help="How the CFR-estimated cases flow into Steps 2–4. "
+                 "Total cases: a single combined incidence series. "
+                 "Confirmed/Suspected: replaces that column downstream.",
+        )
+
+        with st.expander("Advanced Epidemiological Parameters", expanded=False):
+            cfr_t2 = st.number_input(
+                "Doubling time t₂ (days)",
+                min_value=0.5, max_value=120.0,
+                value=float(st.session_state.get("cfr_t2", 14.0)),
+                step=0.5, key="cfr_t2",
+                help="Epidemic doubling time. Growth rate r = ln(2)/t₂.",
+            )
+            cfr_alpha = st.number_input(
+                "Shape α",
+                min_value=0.01, max_value=50.0,
+                value=float(st.session_state.get("cfr_alpha", 4.42)),
+                step=0.01, key="cfr_alpha",
+                help="Shape parameter of the Gamma onset-to-death distribution.",
+            )
+            cfr_beta = st.number_input(
+                "Rate β",
+                min_value=0.001, max_value=10.0,
+                value=float(st.session_state.get("cfr_beta", 0.388)),
+                step=0.001, format="%.3f", key="cfr_beta",
+                help="Rate parameter of the Gamma onset-to-death distribution.",
+            )
+
     generate = st.button("Generate daily series", type="primary",
                          use_container_width=True)
 
@@ -4660,19 +4898,19 @@ with left:
         if snapshots is None and incidence_df is None:
             st.warning("Please provide input data first.")
         else:
+            built_series = None
             if snapshots is not None:
                 if len(snapshots) < 2:
                     st.warning("Need at least 2 cumulative snapshot rows.")
                 else:
                     snaps = attach_source(snapshots.copy(), source_mode,
                                           whole_table_source)
-                    series = interpolate_from_cumulative(snaps)
-                    st.session_state["result_series"] = series
+                    built_series = interpolate_from_cumulative(snaps)
                     st.session_state["result_chart_snaps"] = snaps
             else:
                 inc = attach_source(incidence_df.copy(), source_mode,
                                     whole_table_source)
-                series = expand_incidence(inc)
+                built_series = expand_incidence(inc)
                 # Convert dates BEFORE sorting — sorting string dates is
                 # lexicographic ("10-Jan-2026" before "2-Feb-2026") and
                 # corrupts the x-axis on the Step 1 chart.
@@ -4684,8 +4922,23 @@ with left:
                     cumulative_suspected=inc_sorted["new_suspected"].cumsum(),
                     cumulative_deaths=inc_sorted["new_deaths"].cumsum(),
                 )
-                st.session_state["result_series"] = series
                 st.session_state["result_chart_snaps"] = chart_snaps
+
+            if built_series is not None and len(built_series) > 0:
+                if cfr_enabled:
+                    built_series = cfr_backcalculate(
+                        built_series, cfr_pct=cfr_pct,
+                        doubling_time=cfr_t2, alpha=cfr_alpha, beta=cfr_beta,
+                        sma_window=cfr_sma,
+                    )
+                    st.session_state["cfr_active"] = True
+                    st.session_state["cfr_role_active"] = cfr_role
+                    st.session_state["cfr_pct_active"] = cfr_pct
+                    st.session_state["cfr_sma_active"] = cfr_sma
+                else:
+                    st.session_state["cfr_active"] = False
+                    st.session_state.pop("cfr_role_active", None)
+                st.session_state["result_series"] = built_series
 
 # -------------------------------------------------------------------------
 # RIGHT — Output panel
@@ -4715,16 +4968,27 @@ with right:
             st.session_state["chart_cumulative"] = _fig_cum
             st.plotly_chart(_fig_cum, use_container_width=True)
         with tab3:
-            display = series[TABLE_COLS].copy()
+            extra_cfr_cols = [c for c in
+                              ["new_cfr_estimated", "cumulative_cfr_estimated",
+                               "new_cfr_estimated_sma", "new_deaths_sma"]
+                              if c in series.columns]
+            display = series[TABLE_COLS + extra_cfr_cols].copy()
             display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d %b %Y")
             for col in ["new_confirmed", "new_suspected", "new_deaths"]:
                 display[col] = display[col].round(0).astype(int)
-            display = display.rename(columns={
+            for col in extra_cfr_cols:
+                display[col] = display[col].round(1)
+            rename_map = {
                 "date": "Date",
                 "new_confirmed": "New confirmed",
                 "new_suspected": "New suspected",
                 "new_deaths": "New deaths",
-            })
+                "new_cfr_estimated": "Est. new cases (CFR)",
+                "cumulative_cfr_estimated": "Est. cumulative (CFR)",
+                "new_cfr_estimated_sma": "Est. new cases (CFR, SMA)",
+                "new_deaths_sma": "New deaths (SMA)",
+            }
+            display = display.rename(columns=rename_map)
             st.dataframe(display, use_container_width=True, height=440,
                          hide_index=True)
 
@@ -4734,10 +4998,13 @@ with right:
         dl_col, next_col = st.columns([1, 1])
         with dl_col:
             slug = _slug(st.session_state.get("scenario_name", ""))
+            cfr_tag = ""
+            if st.session_state.get("cfr_active"):
+                cfr_tag = f"__cfr{int(st.session_state.get('cfr_pct_active', 0))}"
             st.download_button(
                 "Download daily_incidence.csv",
                 csv_out.to_csv(index=False).encode("utf-8"),
-                f"{slug}__daily_incidence.csv", "text/csv",
+                f"{slug}__daily_incidence{cfr_tag}.csv", "text/csv",
                 use_container_width=True,
             )
         with next_col:
