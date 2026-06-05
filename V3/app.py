@@ -407,6 +407,16 @@ def build_excel_report() -> bytes:
             "first-differenced; small non-integer values are an artefact of "
             "interpolation, not observed data."
         )
+        if (ss.get("cfr_active")
+                and "new_cfr_estimated" in series.columns):
+            interp_text += (
+                f" CFR backcalculation applied (Imperial / Garske et al.): "
+                f"CFR = {ss.get('cfr_pct_active', '?')}%, "
+                f"role = {ss.get('cfr_role_active', 'Total cases')}. "
+                f"Estimated true total cases "
+                f"= {float(series['new_cfr_estimated'].sum()):,.0f} "
+                f"(phase-bias multiplier (1+r/β)^α applied to deaths/CFR)."
+            )
         _interpretation_block(ws, end_row + 1, interp_text)
 
         # Column widths
@@ -695,7 +705,7 @@ def build_excel_report() -> bytes:
     narrative.append(f"Report generated: {now}")
     narrative.append("")
     if series is not None and len(series):
-        narrative.append(
+        _line = (
             f"DATA. Daily incidence series covers {len(series)} days "
             f"({pd.to_datetime(series['date']).min():%d %b %Y} → "
             f"{pd.to_datetime(series['date']).max():%d %b %Y}). "
@@ -703,6 +713,16 @@ def build_excel_report() -> bytes:
             f"confirmed, "
             f"{float(series['cumulative_suspected'].iloc[-1]):,.0f} suspected."
         )
+        if (ss.get("cfr_active")
+                and "cumulative_cfr_estimated" in series.columns):
+            _line += (
+                f" CFR backcalculation active "
+                f"(CFR = {ss.get('cfr_pct_active', '?')}%, "
+                f"role = {ss.get('cfr_role_active', 'Total cases')}): "
+                f"estimated true cumulative "
+                f"= {float(series['cumulative_cfr_estimated'].iloc[-1]):,.0f}."
+            )
+        narrative.append(_line)
     if rt_df is not None and not rt_df.empty:
         prim = rt_df[rt_df["si_mean_used"] == si_used].dropna(subset=["rt_mean"])
         if not prim.empty:
@@ -970,6 +990,10 @@ INPUT_STATE_KEYS = [
     "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
     "fc_preview_traj", "fc_preview_dates",
     "eoo_days", "eoo_probs", "eoo_valid_plc",
+    # CFR backcalculation (Step 1)
+    "cfr_enabled", "cfr_choice", "cfr_pct_custom", "cfr_sma_label",
+    "cfr_role", "cfr_t2", "cfr_alpha", "cfr_beta",
+    "cfr_active", "cfr_role_active", "cfr_pct_active", "cfr_sma_active",
 ]
 
 
@@ -3831,10 +3855,25 @@ if st.session_state["step"] == "forecast":
         _eligible = series_in[pd.to_datetime(series_in["date"]) <= _start_ts]
         _base_row = (_eligible.iloc[-1] if len(_eligible)
                       else series_in.iloc[0])
-        base_conf_default = int(round(float(
-            _base_row.get("cumulative_confirmed", 0))))
-        base_susp_default = int(round(float(
-            _base_row.get("cumulative_suspected", 0))))
+        # When CFR backcalculation is active, match the baseline to whichever
+        # role the user picked — otherwise the seed (CFR estimate) and the
+        # baseline (observed) would be on different scales.
+        _cfr_role_fc = st.session_state.get("cfr_role_active", "Total cases")
+        _cfr_on = (st.session_state.get("cfr_active")
+                   and "cumulative_cfr_estimated" in series_in.columns)
+        _cfr_cum = float(_base_row.get("cumulative_cfr_estimated", 0)) if _cfr_on else 0.0
+        if _cfr_on and _cfr_role_fc == "Confirmed":
+            base_conf_default = int(round(_cfr_cum))
+            base_susp_default = int(round(float(_base_row.get("cumulative_suspected", 0))))
+        elif _cfr_on and _cfr_role_fc == "Suspected":
+            base_conf_default = int(round(float(_base_row.get("cumulative_confirmed", 0))))
+            base_susp_default = int(round(_cfr_cum))
+        elif _cfr_on:  # Total cases
+            base_conf_default = int(round(_cfr_cum))
+            base_susp_default = 0
+        else:
+            base_conf_default = int(round(float(_base_row.get("cumulative_confirmed", 0))))
+            base_susp_default = int(round(float(_base_row.get("cumulative_suspected", 0))))
         base_death_default = int(round(float(
             _base_row.get("cumulative_deaths", 0))))
         _baseline_sig = (base_conf_default, base_susp_default,
@@ -4397,6 +4436,12 @@ if st.session_state["step"] == "rt":
                 "are true positives, so R_t can look biased high or noisier. "
                 "Use as a sensitivity check."
             )
+        # If a stale value (e.g. "CFR-estimated" after the user disabled CFR
+        # and regenerated) is in session state, drop it so Streamlit doesn't
+        # crash on the radio. The `index=` argument cannot override an
+        # existing widget-state value.
+        if (st.session_state.get("rt_incidence_source_label") not in options):
+            st.session_state.pop("rt_incidence_source_label", None)
         incidence_source_label = st.radio(
             "Which series drives R_t?",
             options,
