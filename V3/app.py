@@ -1335,7 +1335,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
         has_source = "source" in snap_sorted.columns
         for col, label in views:
             customdata = snap_sorted["source"] if has_source else [""] * len(snap_sorted)
-            hover = ("%{x|%d %b %Y}<br>DON " + label + ": %{y:.0f}"
+            hover = ("%{x|%d %b %Y}<br>" + label + " (snapshot): %{y:.0f}"
                      + ("<br>Source: %{customdata}" if has_source else "")
                      + "<extra></extra>")
             fig.add_trace(go.Scatter(
