@@ -4773,7 +4773,7 @@ with left:
             "DRC DON602/603/605 cumulative"
             if is_cumulative
             else "African CDC Bundibugyo Virus Disease Outbreak Situational "
-                 "Report — daily incidence, 01 May–02 Jun 2026"
+                 "Report — daily incidence, 01 May–05 Jun 2026"
         )
         st.markdown(
             f'<div style="margin:0.3rem 0 0.6rem 0; padding:0.5rem 0.8rem; '
@@ -4794,17 +4794,20 @@ with left:
             }
         else:
             # African CDC "Bundibugyo Virus Disease Outbreak Situational
-            # Report" — daily incidence, 01 May 2026 → 02 Jun 2026.
+            # Report" — daily incidence, 01 May 2026 → 05 Jun 2026.
+            # Dates absent from the report (03–04 Jun) are filled with zeros.
             default_cols = {
                 "date": [date(2026, 5, d) for d in range(1, 32)]
-                        + [date(2026, 6, 1), date(2026, 6, 2)],
+                        + [date(2026, 6, d) for d in range(1, 6)],
                 "new_confirmed": [
                     1, 1, 2, 0, 1, 0, 2, 2, 0, 2, 2, 1, 5, 3, 7, 20, 9, 20,
-                    11, 1, 0, 0, 5, 10, 4, 0, 16, 4, 78, 51, 19, 39, 23],
-                "new_suspected": [0] * 33,
+                    11, 1, 0, 0, 5, 10, 4, 0, 16, 4, 78, 51, 19,
+                    39, 23, 0, 0, 105],
+                "new_suspected": [0] * 36,
                 "new_deaths": [
                     0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 3, 1,
-                    0, 0, 0, 0, 0, 0, 2, 5, 0, 0, 25, 0, 6, 12],
+                    0, 0, 0, 0, 0, 0, 2, 5, 0, 0, 25, 0,
+                    6, 12, 0, 0, 16],
             }
         if per_row_source:
             n_rows = len(default_cols["date"])
