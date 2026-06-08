@@ -950,21 +950,33 @@ TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 def cfr_active_badge():
     """Render a banner on Steps 2-4 whenever Step 1's CFR backcalculation
-    is active, so the user knows downstream inputs are CFR-sourced."""
-    if not st.session_state.get("cfr_active"):
-        return
-    pct = st.session_state.get("cfr_pct_active", "?")
-    role = st.session_state.get("cfr_role_active", "Total cases")
-    st.markdown(
-        f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
-        f'background:#f3e7fb; border-left:4px solid #6a1b9a; '
-        f'border-radius:5px; font-size:0.85rem; color:#3b1455;">'
-        f'<b>CFR backcalculation active</b> — '
-        f'CFR = {pct}%, treated as <b>{role}</b>. '
-        f'Inputs below are sourced from estimated true cases.'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    or standalone smoothing is active, so the user knows downstream inputs
+    have been transformed."""
+    if st.session_state.get("cfr_active"):
+        pct = st.session_state.get("cfr_pct_active", "?")
+        role = st.session_state.get("cfr_role_active", "Total cases")
+        st.markdown(
+            f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
+            f'background:#f3e7fb; border-left:4px solid #6a1b9a; '
+            f'border-radius:5px; font-size:0.85rem; color:#3b1455;">'
+            f'<b>CFR backcalculation active</b> — '
+            f'CFR = {pct}%, treated as <b>{role}</b>. '
+            f'Inputs below are sourced from estimated true cases.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    if st.session_state.get("smooth_active"):
+        w = st.session_state.get("smooth_window_active", "?")
+        st.markdown(
+            f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
+            f'background:#e7f3fb; border-left:4px solid #1f4e79; '
+            f'border-radius:5px; font-size:0.85rem; color:#14385b;">'
+            f'<b>Smoothing active</b> — daily incidence smoothed with a '
+            f'{w}-day trailing moving average. Steps below consume the '
+            f'smoothed series.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # Keys whose persistence is tracked across step navigation. These keys hold
@@ -994,6 +1006,8 @@ INPUT_STATE_KEYS = [
     "cfr_enabled", "cfr_choice", "cfr_pct_custom", "cfr_sma_label",
     "cfr_role", "cfr_t2", "cfr_alpha", "cfr_beta",
     "cfr_active", "cfr_role_active", "cfr_pct_active", "cfr_sma_active",
+    # Standalone smoothing (Step 1)
+    "smooth_label", "smooth_active", "smooth_window_active",
 ]
 
 
@@ -1248,6 +1262,27 @@ def cfr_backcalculate(series: pd.DataFrame, cfr_pct: float,
     return out
 
 
+def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Standalone trailing simple moving average over the daily incidence
+    columns, applied independently of the CFR backcalculation.
+
+    The raw observed values are preserved in `<col>_raw`; the `<col>` values
+    are replaced by the trailing SMA so every downstream step (R_t, forecast,
+    EOO) consumes the smoothed series. A trailing (not centred) window is used
+    so no future information leaks into the causal R_t estimate."""
+    w = int(window)
+    if w < 2:
+        return series
+    out = series.copy()
+    for col in ["new_confirmed", "new_suspected", "new_deaths"]:
+        if col in out.columns:
+            out[f"{col}_raw"] = out[col].astype(float)
+            out[col] = (out[col].astype(float)
+                        .rolling(window=w, min_periods=1).mean())
+    out.attrs["smooth_window"] = w
+    return out
+
+
 def daily_chart(series: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     for col, label in [
@@ -1255,11 +1290,27 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
         ("new_suspected", "New suspected"),
         ("new_deaths", "New deaths"),
     ]:
+        raw_col = f"{col}_raw"
+        if raw_col in series.columns:
+            # Smoothing active — draw the raw observed series faintly behind
+            # the bold smoothed line.
+            fig.add_trace(go.Scatter(
+                x=series["date"], y=series[raw_col],
+                mode="lines", name=label + " (raw)",
+                line=dict(color=COLOURS[col], width=1.0, dash="dot"),
+                opacity=0.4,
+                hovertemplate="%{x|%d %b %Y}<br>" + label
+                + " (raw): %{y:.0f}<extra></extra>",
+            ))
+            plot_label = label + " (smoothed)"
+        else:
+            plot_label = label
         fig.add_trace(go.Scatter(
             x=series["date"], y=series[col],
-            mode="lines", name=label,
+            mode="lines", name=plot_label,
             line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.1f}<extra></extra>",
+            hovertemplate="%{x|%d %b %Y}<br>" + plot_label
+            + ": %{y:.1f}<extra></extra>",
         ))
     if "new_cfr_estimated" in series.columns:
         fig.add_trace(go.Scatter(
@@ -4769,7 +4820,7 @@ with left:
     }
 
     if input_method == "Manual entry":
-        _sample_src = (
+        _data_src = (
             "DRC DON602/603/605 cumulative"
             if is_cumulative
             else "African CDC Bundibugyo Virus Disease Outbreak Situational "
@@ -4779,7 +4830,7 @@ with left:
             f'<div style="margin:0.3rem 0 0.6rem 0; padding:0.5rem 0.8rem; '
             f'background:#fff8e1; border:1px solid #f0d678; border-radius:5px; '
             f'font-size:0.82rem; color:#6b5a14;">'
-            f'<b>Sample data shown below</b> ({_sample_src}). '
+            f'<b>Data shown below</b> ({_data_src}). '
             f'Edit the rows, add your own, or delete to start fresh before running.'
             f'</div>',
             unsafe_allow_html=True,
@@ -4884,6 +4935,27 @@ with left:
                         snapshots = raw_df
                     else:
                         incidence_df = raw_df
+
+    # ------------------------------------------------------------------
+    # Standalone smoothing (independent of CFR) — a moving average over the
+    # daily incidence before it feeds the model.
+    # ------------------------------------------------------------------
+    st.markdown('<div class="section-label">Smoothing</div>',
+                unsafe_allow_html=True)
+    smooth_label = st.selectbox(
+        "Moving-average smoothing",
+        ["None", "3-Day", "5-Day", "7-Day"],
+        index=["None", "3-Day", "5-Day", "7-Day"].index(
+            st.session_state.get("smooth_label", "None")),
+        key="smooth_label",
+        help="Trailing simple moving average applied to the daily new "
+             "confirmed / suspected / deaths series before it feeds Steps "
+             "2–4. Independent of the CFR backcalculation — works with it "
+             "off. Damps day-to-day reporting noise; raw values are kept "
+             "for reference and shown faintly on the chart.",
+    )
+    smooth_window = {"None": 0, "3-Day": 3,
+                     "5-Day": 5, "7-Day": 7}[smooth_label]
 
     # ------------------------------------------------------------------
     # CFR backcalculation controls (Imperial / Garske et al.)
@@ -5020,6 +5092,17 @@ with left:
                 else:
                     st.session_state["cfr_active"] = False
                     st.session_state.pop("cfr_role_active", None)
+
+                # Standalone smoothing — applied after CFR so it also damps
+                # the CFR-estimated base columns; works fine with CFR off.
+                if smooth_window >= 2:
+                    built_series = smooth_incidence(built_series, smooth_window)
+                    st.session_state["smooth_active"] = True
+                    st.session_state["smooth_window_active"] = smooth_window
+                else:
+                    st.session_state["smooth_active"] = False
+                    st.session_state.pop("smooth_window_active", None)
+
                 st.session_state["result_series"] = built_series
 
 # -------------------------------------------------------------------------
@@ -5050,21 +5133,36 @@ with right:
             st.session_state["chart_cumulative"] = _fig_cum
             st.plotly_chart(_fig_cum, use_container_width=True)
         with tab3:
+            smooth_raw_cols = [c for c in
+                               ["new_confirmed_raw", "new_suspected_raw",
+                                "new_deaths_raw"] if c in series.columns]
+            smoothing_on = bool(smooth_raw_cols)
             extra_cfr_cols = [c for c in
                               ["new_cfr_estimated", "cumulative_cfr_estimated",
                                "new_cfr_estimated_sma", "new_deaths_sma"]
                               if c in series.columns]
-            display = series[TABLE_COLS + extra_cfr_cols].copy()
+            display = series[TABLE_COLS + smooth_raw_cols + extra_cfr_cols].copy()
             display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d %b %Y")
             for col in ["new_confirmed", "new_suspected", "new_deaths"]:
+                if smoothing_on:
+                    display[col] = display[col].round(1)
+                else:
+                    display[col] = display[col].round(0).astype(int)
+            for col in smooth_raw_cols:
                 display[col] = display[col].round(0).astype(int)
             for col in extra_cfr_cols:
                 display[col] = display[col].round(1)
             rename_map = {
                 "date": "Date",
-                "new_confirmed": "New confirmed",
-                "new_suspected": "New suspected",
-                "new_deaths": "New deaths",
+                "new_confirmed": "New confirmed (smoothed)" if smoothing_on
+                                 else "New confirmed",
+                "new_suspected": "New suspected (smoothed)" if smoothing_on
+                                 else "New suspected",
+                "new_deaths": "New deaths (smoothed)" if smoothing_on
+                              else "New deaths",
+                "new_confirmed_raw": "New confirmed (raw)",
+                "new_suspected_raw": "New suspected (raw)",
+                "new_deaths_raw": "New deaths (raw)",
                 "new_cfr_estimated": "Est. new cases (CFR)",
                 "cumulative_cfr_estimated": "Est. cumulative (CFR)",
                 "new_cfr_estimated_sma": "Est. new cases (CFR, SMA)",
