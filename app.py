@@ -4724,6 +4724,10 @@ with left:
     if source_mode == "Single source for whole table":
         whole_table_source = st.text_input(
             "Source URL or DOI",
+            value=st.session_state.get(
+                "whole_table_source",
+                "Africa CDC — Bundibugyo Virus Disease Outbreak Situational "
+                "Report"),
             placeholder="https://www.who.int/.../2026-DON605",
             key="whole_table_source",
         )
@@ -4734,6 +4738,7 @@ with left:
         value_type = st.radio(
             "Values are",
             ["Cumulative", "Incidence (daily new)"],
+            index=1,
             key="value_type",
         )
     with c2:
@@ -4764,13 +4769,19 @@ with left:
     }
 
     if input_method == "Manual entry":
+        _sample_src = (
+            "DRC DON602/603/605 cumulative"
+            if is_cumulative
+            else "African CDC Bundibugyo Virus Disease Outbreak Situational "
+                 "Report — daily incidence, 01 May–02 Jun 2026"
+        )
         st.markdown(
-            '<div style="margin:0.3rem 0 0.6rem 0; padding:0.5rem 0.8rem; '
-            'background:#fff8e1; border:1px solid #f0d678; border-radius:5px; '
-            'font-size:0.82rem; color:#6b5a14;">'
-            '<b>Sample data shown below</b> (DRC DON602/603/605 cumulative). '
-            'Edit the rows, add your own, or delete to start fresh before running.'
-            '</div>',
+            f'<div style="margin:0.3rem 0 0.6rem 0; padding:0.5rem 0.8rem; '
+            f'background:#fff8e1; border:1px solid #f0d678; border-radius:5px; '
+            f'font-size:0.82rem; color:#6b5a14;">'
+            f'<b>Sample data shown below</b> ({_sample_src}). '
+            f'Edit the rows, add your own, or delete to start fresh before running.'
+            f'</div>',
             unsafe_allow_html=True,
         )
         if is_cumulative:
@@ -4782,12 +4793,18 @@ with left:
                 "cumulative_deaths": [84, 186, 241],
             }
         else:
+            # African CDC "Bundibugyo Virus Disease Outbreak Situational
+            # Report" — daily incidence, 01 May 2026 → 02 Jun 2026.
             default_cols = {
-                "date": [date(2026, 5, 15), date(2026, 5, 21),
-                         date(2026, 5, 27), date(2026, 5, 29)],
-                "new_confirmed": [8, 75, 42, 9],
-                "new_suspected": [246, 500, 160, 356],
-                "new_deaths": [4, 5, 8, 1],
+                "date": [date(2026, 5, d) for d in range(1, 32)]
+                        + [date(2026, 6, 1), date(2026, 6, 2)],
+                "new_confirmed": [
+                    1, 1, 2, 0, 1, 0, 2, 2, 0, 2, 2, 1, 5, 3, 7, 20, 9, 20,
+                    11, 1, 0, 0, 5, 10, 4, 0, 16, 4, 78, 51, 19, 39, 23],
+                "new_suspected": [0] * 33,
+                "new_deaths": [
+                    0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 3, 1,
+                    0, 0, 0, 0, 0, 0, 2, 5, 0, 0, 25, 0, 6, 12],
             }
         if per_row_source:
             n_rows = len(default_cols["date"])
