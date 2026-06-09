@@ -16,10 +16,26 @@ def _slug(text: str) -> str:
 
 
 def _try_fig_to_png(fig, width: int = 1100, height: int = 480):
-    """Convert a Plotly figure to PNG bytes. Returns None if kaleido is missing
-    or fails — the Excel report still generates without the image."""
+    """Convert a Plotly figure to PNG bytes. Returns None if static export is
+    unavailable — the Excel report still generates without the image.
+
+    Guard: plotly >= 6 paired with kaleido < 1.0 is a broken combination whose
+    to_image() hangs indefinitely (notably on Windows), so detect it and skip
+    fast rather than freezing the whole app."""
+    def _major_minor(mod):
+        parts = (getattr(mod, "__version__", "0").split(".") + ["0", "0"])[:2]
+        try:
+            return tuple(int(p) for p in parts)
+        except ValueError:
+            return (0, 0)
     try:
-        import plotly.io as pio
+        import plotly, plotly.io as pio
+        try:
+            import kaleido
+        except Exception:
+            return None
+        if _major_minor(plotly)[0] >= 6 and _major_minor(kaleido) < (1, 0):
+            return None  # known-hanging combo — skip image embedding
         return pio.to_image(fig, format="png", width=width, height=height,
                              scale=2)
     except Exception:
@@ -911,27 +927,35 @@ with hdr_r:
             del st.session_state[k]
         st.rerun()
 
-# Persistent Excel-export button row (just below the header)
+# Persistent Excel-export button row (just below the header).
+# IMPORTANT: build the report only when the user clicks — building it on every
+# rerun re-ran the (slow, kaleido-based) chart image export on every widget
+# interaction, which froze the app once charts existed in session_state.
 ex_l, ex_r = st.columns([3.4, 1])
 with ex_r:
-    try:
-        excel_bytes = build_excel_report()
+    if st.button("Generate Excel report", use_container_width=True,
+                 key="excel_build",
+                 help="Builds a single .xlsx with Dashboard, Inputs, Daily "
+                      "incidence, R_t estimates, Forecast, and EOO probability "
+                      "sheets — based on whatever is currently in the app."):
+        try:
+            with st.spinner("Building Excel report…"):
+                st.session_state["_excel_bytes"] = build_excel_report()
+        except Exception as e:
+            st.session_state.pop("_excel_bytes", None)
+            st.caption(f"Excel export unavailable: {e}")
+    if st.session_state.get("_excel_bytes"):
         slug = _slug(st.session_state.get("scenario_name", ""))
         fname = (f"{slug}__evd_forecaster_report__"
                  f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
         st.download_button(
-            "Generate Excel report",
-            data=excel_bytes,
+            "Download Excel report",
+            data=st.session_state["_excel_bytes"],
             file_name=fname,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key="excel_export",
-            help="Downloads a single .xlsx with Dashboard, Inputs, Daily incidence, "
-                 "R_t estimates, Forecast, and EOO probability sheets — based on "
-                 "whatever is currently in the app.",
         )
-    except Exception as e:
-        st.caption(f"Excel export unavailable: {e}")
 
 
 # Project colour palette (matched to outputs/*.png)
