@@ -961,7 +961,6 @@ COLOURS = {
     "cumulative_deaths": "#B22222",
 }
 
-TPR = 0.192  # test positivity rate used in data_prep.py
 TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 
@@ -995,7 +994,7 @@ INPUT_STATE_KEYS = [
     "cfr_active", "cfr_role_active", "cfr_pct_active", "cfr_sma_active",
     # Standalone smoothing (Step 1)
     "smooth_label", "smooth_active", "smooth_window_active",
-    # Estimate suspected from confirmed via TPR (Step 1)
+    # Estimate suspected from confirmed via ratio (Step 1)
     "suspest_enabled", "suspest_tpr", "suspest_basis",
     "suspest_active", "suspest_tpr_active", "suspest_basis_active",
 ]
@@ -1136,10 +1135,8 @@ def interpolate_from_cumulative(snaps: pd.DataFrame) -> pd.DataFrame:
     daily["new_confirmed"] = daily["cumulative_confirmed"].diff().clip(lower=0).fillna(0)
     daily["new_suspected"] = daily["cumulative_suspected"].diff().clip(lower=0).fillna(0)
     daily["new_deaths"] = daily["cumulative_deaths"].diff().clip(lower=0).fillna(0)
-    daily["estimated_true_incidence"] = daily["new_suspected"] / TPR
 
     out_cols = ["new_confirmed", "new_suspected", "new_deaths",
-                "estimated_true_incidence",
                 "cumulative_confirmed", "cumulative_suspected", "cumulative_deaths"]
     if "source" in daily.columns:
         out_cols.append("source")
@@ -1199,10 +1196,8 @@ def expand_incidence(inc: pd.DataFrame) -> pd.DataFrame:
     daily["cumulative_confirmed"] = daily["new_confirmed"].cumsum()
     daily["cumulative_suspected"] = daily["new_suspected"].cumsum()
     daily["cumulative_deaths"] = daily["new_deaths"].cumsum()
-    daily["estimated_true_incidence"] = daily["new_suspected"] / TPR
 
     out_cols = ["date", "new_confirmed", "new_suspected", "new_deaths",
-                "estimated_true_incidence",
                 "cumulative_confirmed", "cumulative_suspected", "cumulative_deaths"]
     if "source" in daily.columns:
         out_cols.append("source")
@@ -1277,7 +1272,7 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
         out["new_cfr_estimated_smooth"] = (
             out["new_cfr_estimated"].astype(float)
             .rolling(window=w, min_periods=1).mean())
-    # Smoothed copy of the TPR-derived estimated-suspected series (same window).
+    # Smoothed copy of the ratio-derived estimated-suspected series (same window).
     if "new_suspected_estimated" in out.columns:
         out["new_suspected_estimated_smooth"] = (
             out["new_suspected_estimated"].astype(float)
@@ -1336,7 +1331,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
             line=dict(color=COLOURS["new_deaths"], width=1.4, dash="dash"),
             hovertemplate="%{x|%d %b %Y}<br>Deaths (SMA): %{y:.1f}<extra></extra>",
         ))
-    # Estimated suspected (Confirmed ÷ TPR). Observed new_suspected is often 0
+    # Estimated suspected (Confirmed ÷ ratio). Observed new_suspected is often 0
     # in the source data, so draw the estimate explicitly.
     if "new_suspected_estimated" in series.columns:
         if "new_suspected_estimated_smooth" in series.columns:
@@ -2328,15 +2323,6 @@ if st.session_state["step"] == "help":
         "Zaire EBOV 0.40–0.90, Sudan 0.50, Bundibugyo 0.30, Reston ≈ 0. "
         "Applied here as a deterministic multiplier on lagged confirmed cases.",
         "Of every 100 confirmed cases, how many die. For Bundibugyo: about 34.",
-    )
-    gentry(
-        "TPR — Test positivity rate",
-        "0.192 (DRC 2026)",
-        "Fraction of laboratory tests that return positive. Used here as a "
-        "rough scaling factor for suspected → estimated incidence. "
-        "Strictly not equivalent to under-ascertainment.",
-        "Out of all the samples sent to the lab, what fraction came back "
-        "positive.",
     )
     gentry(
         "Onset-to-death lag",
@@ -4310,8 +4296,7 @@ with left:
 
     # ------------------------------------------------------------------
     # Estimate suspected from confirmed using the confirmed-to-suspected ratio.
-    # Estimated Suspected = Confirmed ÷ ratio. (This ratio is distinct from the
-    # app-wide TPR constant used elsewhere for suspected → true incidence.)
+    # Estimated Suspected = Confirmed ÷ ratio.
     # ------------------------------------------------------------------
     st.markdown('<div class="section-label">Estimate suspected (from confirmed)</div>',
                 unsafe_allow_html=True)
@@ -4399,7 +4384,7 @@ with left:
                     st.session_state["cfr_active"] = False
                     st.session_state.pop("cfr_role_active", None)
 
-                # Estimate Suspected from Confirmed via TPR. Runs after CFR so
+                # Estimate Suspected from Confirmed via ratio. Runs after CFR so
                 # the Estimated-Confirmed basis is available, and before
                 # smoothing so a smoothed copy follows the usual pattern.
                 if suspest_enabled:
