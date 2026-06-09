@@ -985,6 +985,7 @@ INPUT_STATE_KEYS = [
     "shape_prior_val", "shape_prior_src",
     "rate_prior_val", "rate_prior_src",
     "rt_preset", "selected_rt", "selected_rt_basis",
+    "rt_case_type", "rt_source_kind", "rt_use_smoothed",
     "cfr_val", "cfr_src", "lag_val", "lag_src",
     "forecast_horizon", "forecast_start_date",
     "obs_conf_input", "obs_susp_input", "obs_death_input",
@@ -1348,14 +1349,14 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
         if "new_suspected_estimated_smooth" in series.columns:
             fig.add_trace(go.Scatter(
                 x=series["date"], y=series["new_suspected_estimated"],
-                mode="lines", name="Est. suspected (TPR, raw)",
+                mode="lines", name="Est. suspected (raw)",
                 line=dict(color="#b8860b", width=1.0, dash="dot"), opacity=0.4,
                 hovertemplate="%{x|%d %b %Y}<br>Est. suspected (raw): "
                 "%{y:.0f}<extra></extra>",
             ))
             fig.add_trace(go.Scatter(
                 x=series["date"], y=series["new_suspected_estimated_smooth"],
-                mode="lines", name="Est. suspected (TPR, smoothed)",
+                mode="lines", name="Est. suspected (smoothed)",
                 line=dict(color="#b8860b", width=2.2, dash="dash"),
                 hovertemplate="%{x|%d %b %Y}<br>Est. suspected (smoothed): "
                 "%{y:.1f}<extra></extra>",
@@ -1363,7 +1364,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
         else:
             fig.add_trace(go.Scatter(
                 x=series["date"], y=series["new_suspected_estimated"],
-                mode="lines", name="Est. suspected (TPR)",
+                mode="lines", name="Est. suspected",
                 line=dict(color="#b8860b", width=2.2, dash="dash"),
                 hovertemplate="%{x|%d %b %Y}<br>Est. suspected: "
                 "%{y:.0f}<extra></extra>",
@@ -1409,7 +1410,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
     if "cumulative_suspected_estimated" in series.columns:
         fig.add_trace(go.Scatter(
             x=series["date"], y=series["cumulative_suspected_estimated"],
-            mode="lines", name="Estimated cumulative suspected (TPR)",
+            mode="lines", name="Estimated cumulative suspected",
             line=dict(color="#b8860b", width=2.4, dash="dash"),
             hovertemplate="%{x|%d %b %Y}<br>Est. suspected cumulative: "
             "%{y:.0f}<extra></extra>",
@@ -3750,65 +3751,56 @@ if st.session_state["step"] == "rt":
         st.markdown('<div class="panel-title">R_t inputs</div>',
                     unsafe_allow_html=True)
 
-        st.markdown('<div class="section-label">Incidence source</div>',
+        st.markdown('<div class="section-label">Incidence series for R_t</div>',
                     unsafe_allow_html=True)
-        cfr_role_active = st.session_state.get("cfr_role_active", "Total cases")
-        # Availability of each incidence source is driven by what Step 1
-        # produced. Actual Confirmed/Suspected are always present. Estimated
-        # (CFR back-calc) needs the Step 1 CFR toggle. Smoothed variants need
-        # Step 1 standalone smoothing (detected via the preserved _raw columns).
+        # What Step 1 produced — drives which choices are offered.
         has_cfr = (st.session_state.get("cfr_active", False)
                    and "new_cfr_estimated" in series_in.columns)
-        has_smooth = "new_confirmed_raw" in series_in.columns
-        has_cfr_smooth = (has_cfr
-                          and "new_cfr_estimated_smooth" in series_in.columns)
         has_susp_est = "new_suspected_estimated" in series_in.columns
-        has_susp_est_smooth = "new_suspected_estimated_smooth" in series_in.columns
+        has_smooth = "new_confirmed_raw" in series_in.columns
 
-        # (label, source-key, available?) — built in display order.
-        SRC_MENU = [
-            ("Actual Confirmed",               "confirmed",            True),
-            ("Actual Suspected",               "suspected",            True),
-            ("Estimated Confirmed",            "cfr",                  has_cfr),
-            ("Estimated Suspected",            "suspected_est",        has_susp_est),
-            ("Smoothed Actual Confirmed",      "confirmed_smooth",     has_smooth),
-            ("Smoothed Actual Suspected",      "suspected_smooth",     has_smooth),
-            ("Smoothed Estimated Confirmed",   "cfr_smooth",           has_cfr_smooth),
-            ("Smoothed Estimated Suspected",   "suspected_est_smooth", has_susp_est_smooth),
-        ]
-        options = [lbl for (lbl, _k, ok) in SRC_MENU if ok]
-        label_to_src = {lbl: k for (lbl, k, ok) in SRC_MENU if ok}
+        # Choice 1 — Case type.
+        case_type = st.radio(
+            "Case type", ["Confirmed", "Suspected"], horizontal=True,
+            key="rt_case_type",
+            help="Which case stream drives the R_t estimate.")
 
-        # Sensible default mirrors the CFR role chosen in Step 1.
-        if has_cfr and cfr_role_active == "Total cases":
-            default_label = "Estimated Confirmed"
-        elif cfr_role_active == "Suspected":
-            default_label = "Actual Suspected"
-        else:
-            default_label = "Actual Confirmed"
-        if default_label not in options:
-            default_label = "Actual Confirmed"
+        # Choice 2 — Actual vs Estimated (Estimated only offered when Step 1
+        # produced an estimate for this case type).
+        est_available = has_cfr if case_type == "Confirmed" else has_susp_est
+        source_opts = ["Actual", "Estimated"] if est_available else ["Actual"]
+        if st.session_state.get("rt_source_kind") not in source_opts:
+            st.session_state.pop("rt_source_kind", None)
+        source_kind = st.radio(
+            "Source", source_opts, horizontal=True, key="rt_source_kind",
+            help=("Actual = observed counts. Estimated = "
+                  + ("infections back-calculated from deaths (CFR, Step 1)."
+                     if case_type == "Confirmed"
+                     else "derived from confirmed via the confirmed-to-"
+                          "suspected ratio (Step 1).")))
 
-        help_text = (
-            "Actual = observed case counts. Estimated Confirmed = infections "
-            "back-calculated from deaths via the CFR; Estimated Suspected = "
-            "Confirmed ÷ TPR (both set in Step 1). Smoothed = trailing moving "
-            "average using the Step 1 window. Estimated / Smoothed options "
-            "appear only when they were enabled in Step 1."
-        )
-        # Drop a stale persisted label if it is no longer offered (e.g. the
-        # user disabled smoothing/CFR and regenerated Step 1) so Streamlit does
-        # not crash — the index= argument cannot override existing widget state.
-        if st.session_state.get("rt_incidence_source_label") not in options:
-            st.session_state.pop("rt_incidence_source_label", None)
-        incidence_source_label = st.selectbox(
-            "Which series drives R_t?",
-            options,
-            index=options.index(default_label),
-            key="rt_incidence_source_label",
-            help=help_text,
-        )
-        incidence_source = label_to_src[incidence_source_label]
+        # Choice 3 — Smoothed? (only when Step 1 smoothing was applied).
+        smoothed = False
+        if has_smooth:
+            smoothed = st.checkbox(
+                "Use smoothed values",
+                value=st.session_state.get("rt_use_smoothed", False),
+                key="rt_use_smoothed",
+                help="Trailing moving average using the Step 1 window.")
+
+        # Map the three choices → internal source key.
+        base_key = {
+            ("Confirmed", "Actual"):    "confirmed",
+            ("Suspected", "Actual"):    "suspected",
+            ("Confirmed", "Estimated"): "cfr",
+            ("Suspected", "Estimated"): "suspected_est",
+        }[(case_type, source_kind)]
+        incidence_source = base_key + ("_smooth" if smoothed else "")
+        # Fall back to the unsmoothed series if the smoothed column for this
+        # combination was not produced in Step 1.
+        if (smoothed and _resolve_rt_col(series_in, incidence_source)
+                not in series_in.columns):
+            incidence_source = base_key
         st.session_state["rt_incidence_source"] = incidence_source
 
         st.markdown('<div class="section-label">Serial interval (primary)</div>',
@@ -4268,35 +4260,25 @@ with left:
     cfr_beta = 0.388
 
     if cfr_enabled:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            cfr_choice = st.radio(
-                "CFR scenario",
-                ["24%", "30%", "40%", "Custom"],
-                index=["24%", "30%", "40%", "Custom"].index(
-                    st.session_state.get("cfr_choice", "30%")),
-                key="cfr_choice",
-                horizontal=False,
+        cfr_choice = st.radio(
+            "CFR scenario",
+            ["24%", "30%", "40%", "Custom"],
+            index=["24%", "30%", "40%", "Custom"].index(
+                st.session_state.get("cfr_choice", "30%")),
+            key="cfr_choice",
+            horizontal=True,
+        )
+        if cfr_choice == "Custom":
+            cfr_pct = st.number_input(
+                "Custom CFR (%)",
+                min_value=0.1, max_value=100.0,
+                value=float(st.session_state.get("cfr_pct_custom", 30.0)),
+                step=0.5, key="cfr_pct_custom",
             )
-            if cfr_choice == "Custom":
-                cfr_pct = st.number_input(
-                    "Custom CFR (%)",
-                    min_value=0.1, max_value=100.0,
-                    value=float(st.session_state.get("cfr_pct_custom", 30.0)),
-                    step=0.5, key="cfr_pct_custom",
-                )
-            else:
-                cfr_pct = float(cfr_choice.rstrip("%"))
-        with col_b:
-            sma_label = st.selectbox(
-                "SMA Smoothing",
-                ["None", "3-Day", "5-Day", "7-Day"],
-                index=["None", "3-Day", "5-Day", "7-Day"].index(
-                    st.session_state.get("cfr_sma_label", "None")),
-                key="cfr_sma_label",
-            )
-            cfr_sma = {"None": 0, "3-Day": 3,
-                       "5-Day": 5, "7-Day": 7}[sma_label]
+        else:
+            cfr_pct = float(cfr_choice.rstrip("%"))
+        # (CFR's own SMA removed — the standalone Smoothing control above also
+        # smooths the CFR-estimated series, so a second SMA here was redundant.)
 
         cfr_role = st.radio(
             "Treat estimated cases as",
@@ -4334,30 +4316,33 @@ with left:
             )
 
     # ------------------------------------------------------------------
-    # Estimate suspected from confirmed via TPR (test positivity rate).
-    # Estimated Suspected = Confirmed ÷ TPR, where TPR = confirmed ÷ suspected.
+    # Estimate suspected from confirmed using the confirmed-to-suspected ratio.
+    # Estimated Suspected = Confirmed ÷ ratio. (This ratio is distinct from the
+    # app-wide TPR constant used elsewhere for suspected → true incidence.)
     # ------------------------------------------------------------------
-    st.markdown('<div class="section-label">Estimate suspected (TPR)</div>',
+    st.markdown('<div class="section-label">Estimate suspected (from confirmed)</div>',
                 unsafe_allow_html=True)
     suspest_enabled = st.checkbox(
         "Estimate Suspected from Confirmed",
         value=st.session_state.get("suspest_enabled", False),
         key="suspest_enabled",
-        help="Derives an estimated suspected-case series as Confirmed ÷ TPR "
-             "(test positivity rate = confirmed ÷ suspected). Feeds Step 2 as "
-             "the 'Estimated Suspected' incidence source.",
+        help="Derives an estimated suspected-case series as Confirmed ÷ ratio, "
+             "where ratio = confirmed ÷ suspected. Feeds Step 2 as the "
+             "'Estimated' suspected source.",
     )
-    suspest_tpr = float(TPR)
+    suspest_tpr = 0.15
     suspest_basis = "Actual Confirmed"
     if suspest_enabled:
         se_a, se_b = st.columns(2)
         with se_a:
             suspest_tpr = st.number_input(
-                "TPR (confirmed ÷ suspected)",
+                "Confirmed-to-suspected ratio",
                 min_value=0.01, max_value=1.0,
-                value=float(st.session_state.get("suspest_tpr", TPR)),
-                step=0.001, format="%.3f", key="suspest_tpr",
-                help="Test positivity rate. Estimated Suspected = Confirmed ÷ TPR.",
+                value=float(st.session_state.get("suspest_tpr", 0.15)),
+                step=0.01, format="%.3f", key="suspest_tpr",
+                help="Fraction of suspected cases that are confirmed "
+                     "(confirmed ÷ suspected). Estimated Suspected = "
+                     "Confirmed ÷ this ratio.",
             )
         with se_b:
             basis_opts = (["Actual Confirmed", "Estimated Confirmed (CFR)"]
@@ -4369,7 +4354,7 @@ with left:
                 basis_opts,
                 index=0,
                 key="suspest_basis",
-                help="Which confirmed series to divide by TPR. 'Estimated "
+                help="Which confirmed series to divide by the ratio. 'Estimated "
                      "Confirmed (CFR)' needs the CFR backcalculation enabled.",
             )
 
@@ -4502,7 +4487,7 @@ with right:
                           f"{float(series['cumulative_cfr_estimated'].iloc[-1]):,.0f}",
                           "#6a1b9a"))
         if "cumulative_suspected_estimated" in series.columns:
-            chips.append(("Est. suspected (TPR)",
+            chips.append(("Est. suspected",
                           f"{float(series['cumulative_suspected_estimated'].iloc[-1]):,.0f}",
                           "#b8860b"))
 
@@ -4566,7 +4551,7 @@ with right:
                 "cumulative_cfr_estimated": "Est. cumulative (CFR)",
                 "new_cfr_estimated_sma": "Est. new cases (CFR, SMA)",
                 "new_deaths_sma": "New deaths (SMA)",
-                "new_suspected_estimated": "Est. suspected (TPR)",
+                "new_suspected_estimated": "Est. suspected",
             }
             display = display.rename(columns=rename_map)
             st.dataframe(display, use_container_width=True, height=440,
