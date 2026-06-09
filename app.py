@@ -972,24 +972,6 @@ TPR = 0.192  # test positivity rate used in data_prep.py
 TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 
-def cfr_active_badge():
-    """Render a banner on Steps 2-4 whenever Step 1's CFR backcalculation
-    is active, so the user knows downstream inputs have been transformed."""
-    if st.session_state.get("cfr_active"):
-        pct = st.session_state.get("cfr_pct_active", "?")
-        role = st.session_state.get("cfr_role_active", "Total cases")
-        st.markdown(
-            f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
-            f'background:#f3e7fb; border-left:4px solid #6a1b9a; '
-            f'border-radius:5px; font-size:0.85rem; color:#3b1455;">'
-            f'<b>CFR backcalculation active</b> — '
-            f'CFR = {pct}%, treated as <b>{role}</b>. '
-            f'Inputs below are sourced from estimated cases.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-
 # Keys whose persistence is tracked across step navigation. These keys hold
 # inputs/widget values that survive switching between Step 1/2/3/4/help; the
 # Reset all button clears them.
@@ -2786,7 +2768,6 @@ if st.session_state["step"] == "eoo":
     with left4:
         st.markdown('<div class="panel-title">EOO inputs</div>',
                     unsafe_allow_html=True)
-        cfr_active_badge()
 
         st.markdown('<div class="section-label">Locked from previous steps</div>',
                     unsafe_allow_html=True)
@@ -3124,7 +3105,6 @@ if st.session_state["step"] == "forecast":
     with left3:
         st.markdown('<div class="panel-title">Forecast inputs</div>',
                     unsafe_allow_html=True)
-        cfr_active_badge()
 
         # --- Frozen inputs ---
         st.markdown('<div class="section-label">Locked from previous steps</div>',
@@ -3723,7 +3703,6 @@ if st.session_state["step"] == "rt":
     with left2:
         st.markdown('<div class="panel-title">R_t inputs</div>',
                     unsafe_allow_html=True)
-        cfr_active_badge()
 
         st.markdown('<div class="section-label">Incidence source</div>',
                     unsafe_allow_html=True)
