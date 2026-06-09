@@ -974,8 +974,7 @@ TABLE_COLS = ["date", "new_confirmed", "new_suspected", "new_deaths"]
 
 def cfr_active_badge():
     """Render a banner on Steps 2-4 whenever Step 1's CFR backcalculation
-    or standalone smoothing is active, so the user knows downstream inputs
-    have been transformed."""
+    is active, so the user knows downstream inputs have been transformed."""
     if st.session_state.get("cfr_active"):
         pct = st.session_state.get("cfr_pct_active", "?")
         role = st.session_state.get("cfr_role_active", "Total cases")
@@ -986,18 +985,6 @@ def cfr_active_badge():
             f'<b>CFR backcalculation active</b> — '
             f'CFR = {pct}%, treated as <b>{role}</b>. '
             f'Inputs below are sourced from estimated cases.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    if st.session_state.get("smooth_active"):
-        w = st.session_state.get("smooth_window_active", "?")
-        st.markdown(
-            f'<div style="margin:0.4rem 0 0.8rem 0; padding:0.45rem 0.8rem; '
-            f'background:#e7f3fb; border-left:4px solid #1f4e79; '
-            f'border-radius:5px; font-size:0.85rem; color:#14385b;">'
-            f'<b>Smoothing active</b> — daily incidence smoothed with a '
-            f'{w}-day trailing moving average. Steps below consume the '
-            f'smoothed series.'
             f'</div>',
             unsafe_allow_html=True,
         )
