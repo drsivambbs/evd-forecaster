@@ -1406,6 +1406,14 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
             line=dict(color="#6a1b9a", width=2.4),
             hovertemplate="%{x|%d %b %Y}<br>CFR cumulative: %{y:.0f}<extra></extra>",
         ))
+    if "cumulative_suspected_estimated" in series.columns:
+        fig.add_trace(go.Scatter(
+            x=series["date"], y=series["cumulative_suspected_estimated"],
+            mode="lines", name="Estimated cumulative suspected (TPR)",
+            line=dict(color="#b8860b", width=2.4, dash="dash"),
+            hovertemplate="%{x|%d %b %Y}<br>Est. suspected cumulative: "
+            "%{y:.0f}<extra></extra>",
+        ))
 
     if snaps is not None and len(snaps) > 0:
         # IMPORTANT: convert dates BEFORE sorting. Sorting first treats
@@ -4426,6 +4434,8 @@ with left:
                     built_series["new_suspected_estimated"] = (
                         (built_series[basis_col].astype(float) / tpr_val)
                         .round().astype(int))
+                    built_series["cumulative_suspected_estimated"] = (
+                        built_series["new_suspected_estimated"].cumsum())
                     st.session_state["suspest_active"] = True
                     st.session_state["suspest_tpr_active"] = tpr_val
                     st.session_state["suspest_basis_active"] = basis_col
