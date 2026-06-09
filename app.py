@@ -1001,6 +1001,9 @@ INPUT_STATE_KEYS = [
     "cfr_active", "cfr_role_active", "cfr_pct_active", "cfr_sma_active",
     # Standalone smoothing (Step 1)
     "smooth_label", "smooth_active", "smooth_window_active",
+    # Estimate suspected from confirmed via TPR (Step 1)
+    "suspest_enabled", "suspest_tpr", "suspest_basis",
+    "suspest_active", "suspest_tpr_active", "suspest_basis_active",
 ]
 
 
@@ -1280,6 +1283,11 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
         out["new_cfr_estimated_smooth"] = (
             out["new_cfr_estimated"].astype(float)
             .rolling(window=w, min_periods=1).mean())
+    # Smoothed copy of the TPR-derived estimated-suspected series (same window).
+    if "new_suspected_estimated" in out.columns:
+        out["new_suspected_estimated_smooth"] = (
+            out["new_suspected_estimated"].astype(float)
+            .rolling(window=w, min_periods=1).mean())
     out.attrs["smooth_window"] = w
     return out
 
@@ -1505,6 +1513,10 @@ def _resolve_rt_col(daily: pd.DataFrame, source: str) -> str:
         return "new_suspected"
     if source == "cfr_smooth":
         return "new_cfr_estimated_smooth"
+    if source == "suspected_est":
+        return "new_suspected_estimated"
+    if source == "suspected_est_smooth":
+        return "new_suspected_estimated_smooth"
     return "new_confirmed"
 
 
@@ -3716,15 +3728,19 @@ if st.session_state["step"] == "rt":
         has_smooth = "new_confirmed_raw" in series_in.columns
         has_cfr_smooth = (has_cfr
                           and "new_cfr_estimated_smooth" in series_in.columns)
+        has_susp_est = "new_suspected_estimated" in series_in.columns
+        has_susp_est_smooth = "new_suspected_estimated_smooth" in series_in.columns
 
         # (label, source-key, available?) — built in display order.
         SRC_MENU = [
-            ("Actual Confirmed",              "confirmed",        True),
-            ("Actual Suspected",              "suspected",        True),
-            ("Estimated Confirmed",           "cfr",              has_cfr),
-            ("Smoothed Actual Confirmed",     "confirmed_smooth", has_smooth),
-            ("Smoothed Actual Suspected",     "suspected_smooth", has_smooth),
-            ("Smoothed Estimated Confirmed",  "cfr_smooth",       has_cfr_smooth),
+            ("Actual Confirmed",               "confirmed",            True),
+            ("Actual Suspected",               "suspected",            True),
+            ("Estimated Confirmed",            "cfr",                  has_cfr),
+            ("Estimated Suspected",            "suspected_est",        has_susp_est),
+            ("Smoothed Actual Confirmed",      "confirmed_smooth",     has_smooth),
+            ("Smoothed Actual Suspected",      "suspected_smooth",     has_smooth),
+            ("Smoothed Estimated Confirmed",   "cfr_smooth",           has_cfr_smooth),
+            ("Smoothed Estimated Suspected",   "suspected_est_smooth", has_susp_est_smooth),
         ]
         options = [lbl for (lbl, _k, ok) in SRC_MENU if ok]
         label_to_src = {lbl: k for (lbl, k, ok) in SRC_MENU if ok}
@@ -3740,11 +3756,11 @@ if st.session_state["step"] == "rt":
             default_label = "Actual Confirmed"
 
         help_text = (
-            "Actual = observed case counts. "
-            "Estimated = infections back-calculated from deaths via the CFR "
-            "(Step 1). Smoothed = trailing moving average using the Step 1 "
-            "smoothing window. Estimated / Smoothed options appear only when "
-            "they were enabled in Step 1."
+            "Actual = observed case counts. Estimated Confirmed = infections "
+            "back-calculated from deaths via the CFR; Estimated Suspected = "
+            "Confirmed ÷ TPR (both set in Step 1). Smoothed = trailing moving "
+            "average using the Step 1 window. Estimated / Smoothed options "
+            "appear only when they were enabled in Step 1."
         )
         # Drop a stale persisted label if it is no longer offered (e.g. the
         # user disabled smoothing/CFR and regenerated Step 1) so Streamlit does
@@ -4283,6 +4299,46 @@ with left:
                 help="Rate parameter of the Gamma onset-to-death distribution.",
             )
 
+    # ------------------------------------------------------------------
+    # Estimate suspected from confirmed via TPR (test positivity rate).
+    # Estimated Suspected = Confirmed ÷ TPR, where TPR = confirmed ÷ suspected.
+    # ------------------------------------------------------------------
+    st.markdown('<div class="section-label">Estimate suspected (TPR)</div>',
+                unsafe_allow_html=True)
+    suspest_enabled = st.checkbox(
+        "Estimate Suspected from Confirmed",
+        value=st.session_state.get("suspest_enabled", False),
+        key="suspest_enabled",
+        help="Derives an estimated suspected-case series as Confirmed ÷ TPR "
+             "(test positivity rate = confirmed ÷ suspected). Feeds Step 2 as "
+             "the 'Estimated Suspected' incidence source.",
+    )
+    suspest_tpr = float(TPR)
+    suspest_basis = "Actual Confirmed"
+    if suspest_enabled:
+        se_a, se_b = st.columns(2)
+        with se_a:
+            suspest_tpr = st.number_input(
+                "TPR (confirmed ÷ suspected)",
+                min_value=0.01, max_value=1.0,
+                value=float(st.session_state.get("suspest_tpr", TPR)),
+                step=0.001, format="%.3f", key="suspest_tpr",
+                help="Test positivity rate. Estimated Suspected = Confirmed ÷ TPR.",
+            )
+        with se_b:
+            basis_opts = (["Actual Confirmed", "Estimated Confirmed (CFR)"]
+                          if cfr_enabled else ["Actual Confirmed"])
+            if st.session_state.get("suspest_basis") not in basis_opts:
+                st.session_state.pop("suspest_basis", None)
+            suspest_basis = st.selectbox(
+                "Calculate from",
+                basis_opts,
+                index=0,
+                key="suspest_basis",
+                help="Which confirmed series to divide by TPR. 'Estimated "
+                     "Confirmed (CFR)' needs the CFR backcalculation enabled.",
+            )
+
     generate = st.button("Generate daily series", type="primary",
                          use_container_width=True)
 
@@ -4331,6 +4387,27 @@ with left:
                     st.session_state["cfr_active"] = False
                     st.session_state.pop("cfr_role_active", None)
 
+                # Estimate Suspected from Confirmed via TPR. Runs after CFR so
+                # the Estimated-Confirmed basis is available, and before
+                # smoothing so a smoothed copy follows the usual pattern.
+                if suspest_enabled:
+                    tpr_val = max(float(suspest_tpr), 1e-9)
+                    if (suspest_basis.startswith("Estimated")
+                            and "new_cfr_estimated" in built_series.columns):
+                        basis_col = "new_cfr_estimated"
+                    else:
+                        basis_col = "new_confirmed"
+                    built_series["new_suspected_estimated"] = (
+                        (built_series[basis_col].astype(float) / tpr_val)
+                        .round().astype(int))
+                    st.session_state["suspest_active"] = True
+                    st.session_state["suspest_tpr_active"] = tpr_val
+                    st.session_state["suspest_basis_active"] = basis_col
+                else:
+                    st.session_state["suspest_active"] = False
+                    st.session_state.pop("suspest_tpr_active", None)
+                    st.session_state.pop("suspest_basis_active", None)
+
                 # Standalone smoothing — applied after CFR so it also damps
                 # the CFR-estimated base columns; works fine with CFR off.
                 if smooth_window >= 2:
@@ -4377,7 +4454,8 @@ with right:
             smoothing_on = bool(smooth_raw_cols)
             extra_cfr_cols = [c for c in
                               ["new_cfr_estimated", "cumulative_cfr_estimated",
-                               "new_cfr_estimated_sma", "new_deaths_sma"]
+                               "new_cfr_estimated_sma", "new_deaths_sma",
+                               "new_suspected_estimated"]
                               if c in series.columns]
             display = series[TABLE_COLS + smooth_raw_cols + extra_cfr_cols].copy()
             display["date"] = pd.to_datetime(display["date"]).dt.strftime("%d %b %Y")
@@ -4405,6 +4483,7 @@ with right:
                 "cumulative_cfr_estimated": "Est. cumulative (CFR)",
                 "new_cfr_estimated_sma": "Est. new cases (CFR, SMA)",
                 "new_deaths_sma": "New deaths (SMA)",
+                "new_suspected_estimated": "Est. suspected (TPR)",
             }
             display = display.rename(columns=rename_map)
             st.dataframe(display, use_container_width=True, height=440,
