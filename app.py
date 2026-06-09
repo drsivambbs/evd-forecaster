@@ -294,9 +294,9 @@ def build_excel_report() -> bytes:
         ("Forecast horizon (days)", 365, "forecast_horizon", "int", None),
         ("Forecast start date", "", "forecast_start_date", "string", None),
         ("S1 target R_t", 1.0, "S1_target", "float", None),
-        ("S1 days to target", 60, "S1_days", "int", None),
+        ("S1 days to target", 180, "S1_days", "int", None),
         ("S2 target R_t", 1.0, "S2_target", "float", None),
-        ("S2 days to target", 30, "S2_days", "int", None),
+        ("S2 days to target", 90, "S2_days", "int", None),
         ("S3 target R_t", 0.6, "S3_target", "float", None),
         ("S3 days to target", 30, "S3_days", "int", None),
         ("Step 4 — End of outbreak", None, None, None, None),
@@ -2666,7 +2666,7 @@ if st.session_state["step"] == "help":
     )
     gentry(
         "R<sub>t</sub> scenario — target & days to target",
-        "S1: 1.0/60d · S2: 1.0/30d · S3: 0.6/30d",
+        "S1: 1.0/180d · S2: 1.0/90d · S3: 0.6/30d",
         "Each scenario defines a linear R<sub>t</sub> trajectory: starts at the user-"
         "selected R<sub>t</sub>, declines linearly to <code>target</code> over "
         "<code>days_to_target</code> days, then plateaus. Represents an assumption "
@@ -3313,8 +3313,8 @@ if st.session_state["step"] == "forecast":
         )
 
         scen_defaults = {
-            "S1": {"label": "Delayed response", "target": 1.0, "days": 60},
-            "S2": {"label": "Moderate response", "target": 1.0, "days": 30},
+            "S1": {"label": "Delayed response", "target": 1.0, "days": 180},
+            "S2": {"label": "Moderate response", "target": 1.0, "days": 90},
             "S3": {"label": "Strong combined", "target": 0.6, "days": 30},
         }
         scen_inputs = {}
