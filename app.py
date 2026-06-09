@@ -59,8 +59,7 @@ def _apply_header_style(ws, row: int, cols: int, fill: str, font_color: str = "F
 
 
 def _write_title_block(ws, title: str, subtitle: str = ""):
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Font, Alignment
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
     ws.cell(row=1, column=1, value=title).font = Font(
         name="Calibri", size=18, bold=True, color="1F4E79")
@@ -85,8 +84,6 @@ def build_excel_report() -> bytes:
     interpretation), and a final Interpretation sheet."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils.dataframe import dataframe_to_rows
-    from openpyxl.utils import get_column_letter
     from openpyxl.drawing.image import Image as XLImage
 
     ss = st.session_state
@@ -96,11 +93,8 @@ def build_excel_report() -> bytes:
     brand = "1F4E79"
     brand_light = "DDE7F0"
     grey_band = "F1F4F8"
-    accent_orange = "E07B39"
 
-    NAVY = Font(name="Calibri", size=11, bold=True, color=brand)
     H2 = Font(name="Calibri", size=14, bold=True, color=brand)
-    SMALL_GREY = Font(name="Calibri", size=9, color="5B6573")
     BOLD = Font(name="Calibri", size=11, bold=True)
     fill_brand = PatternFill(start_color=brand, end_color=brand, fill_type="solid")
     fill_brand_light = PatternFill(start_color=brand_light,
@@ -510,7 +504,6 @@ def build_excel_report() -> bytes:
                             "Nouvellet 2018; 3 response scenarios with 90% PI bands")
 
         # Embed forecast chart (from session_state)
-        scen_inputs_used = ss.get("fc_scen_inputs", {})
         scen_defaults = {"S1": {"label": "Delayed response"},
                           "S2": {"label": "Moderate response"},
                           "S3": {"label": "Strong combined"}}
@@ -997,7 +990,7 @@ INPUT_STATE_KEYS = [
     "fc_preview_traj", "fc_preview_dates",
     "eoo_days", "eoo_probs", "eoo_valid_plc",
     # CFR backcalculation (Step 1)
-    "cfr_enabled", "cfr_choice", "cfr_pct_custom", "cfr_sma_label",
+    "cfr_enabled", "cfr_choice", "cfr_pct_custom",
     "cfr_role", "cfr_t2", "cfr_alpha", "cfr_beta",
     "cfr_active", "cfr_role_active", "cfr_pct_active", "cfr_sma_active",
     # Standalone smoothing (Step 1)
