@@ -4474,6 +4474,53 @@ with right:
             unsafe_allow_html=True,
         )
     else:
+        # --- Compact summary dashboard above the charts ---
+        def _raw_sum(col):
+            rc = f"{col}_raw"
+            src = series[rc] if rc in series.columns else series.get(col)
+            return float(src.sum()) if src is not None else 0.0
+
+        _dates = pd.to_datetime(series["date"])
+        _conf_src = (series["new_confirmed_raw"]
+                     if "new_confirmed_raw" in series.columns
+                     else series["new_confirmed"])
+        tot_conf = _raw_sum("new_confirmed")
+        tot_susp = _raw_sum("new_suspected")
+        tot_death = _raw_sum("new_deaths")
+        cfr_naive = (tot_death / tot_conf * 100) if tot_conf > 0 else 0.0
+
+        chips = [
+            ("Days", f"{len(series)}", "#1f4e79"),
+            ("Confirmed", f"{tot_conf:,.0f}", "#4682B4"),
+            ("Suspected", f"{tot_susp:,.0f}", "#FF8C00"),
+            ("Deaths", f"{tot_death:,.0f}", "#B22222"),
+            ("Peak conf./day", f"{float(_conf_src.max()):,.0f}", "#4682B4"),
+            ("Naive CFR", f"{cfr_naive:.1f}%", "#B22222"),
+        ]
+        if "cumulative_cfr_estimated" in series.columns:
+            chips.append(("Est. cases (CFR)",
+                          f"{float(series['cumulative_cfr_estimated'].iloc[-1]):,.0f}",
+                          "#6a1b9a"))
+        if "cumulative_suspected_estimated" in series.columns:
+            chips.append(("Est. suspected (TPR)",
+                          f"{float(series['cumulative_suspected_estimated'].iloc[-1]):,.0f}",
+                          "#b8860b"))
+
+        _chip_html = ('<div style="display:flex; flex-wrap:wrap; gap:0.4rem; '
+                      'margin:0.1rem 0 0.5rem 0;">')
+        for lbl, val, colour in chips:
+            _chip_html += (
+                f'<div style="flex:1 1 90px; min-width:84px; background:#f6f8fb; '
+                f'border:1px solid #e3e7ed; border-left:3px solid {colour}; '
+                f'border-radius:7px; padding:0.35rem 0.55rem;">'
+                f'<div style="font-size:0.62rem; color:#6b7280; '
+                f'text-transform:uppercase; letter-spacing:0.04em;">{lbl}</div>'
+                f'<div style="font-size:1.0rem; font-weight:600; color:{colour};">'
+                f'{val}</div></div>')
+        _chip_html += '</div>'
+        st.markdown(_chip_html, unsafe_allow_html=True)
+        st.caption(f"{_dates.min():%d %b %Y} → {_dates.max():%d %b %Y}")
+
         tab1, tab2, tab3 = st.tabs(["Daily new", "Cumulative", "Table"])
         with tab1:
             _fig_daily = daily_chart(series)
