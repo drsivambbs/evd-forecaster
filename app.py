@@ -1342,6 +1342,32 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
             line=dict(color=COLOURS["new_deaths"], width=1.4, dash="dash"),
             hovertemplate="%{x|%d %b %Y}<br>Deaths (SMA): %{y:.1f}<extra></extra>",
         ))
+    # Estimated suspected (Confirmed ÷ TPR). Observed new_suspected is often 0
+    # in the source data, so draw the estimate explicitly.
+    if "new_suspected_estimated" in series.columns:
+        if "new_suspected_estimated_smooth" in series.columns:
+            fig.add_trace(go.Scatter(
+                x=series["date"], y=series["new_suspected_estimated"],
+                mode="lines", name="Est. suspected (TPR, raw)",
+                line=dict(color="#b8860b", width=1.0, dash="dot"), opacity=0.4,
+                hovertemplate="%{x|%d %b %Y}<br>Est. suspected (raw): "
+                "%{y:.0f}<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter(
+                x=series["date"], y=series["new_suspected_estimated_smooth"],
+                mode="lines", name="Est. suspected (TPR, smoothed)",
+                line=dict(color="#b8860b", width=2.2, dash="dash"),
+                hovertemplate="%{x|%d %b %Y}<br>Est. suspected (smoothed): "
+                "%{y:.1f}<extra></extra>",
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=series["date"], y=series["new_suspected_estimated"],
+                mode="lines", name="Est. suspected (TPR)",
+                line=dict(color="#b8860b", width=2.2, dash="dash"),
+                hovertemplate="%{x|%d %b %Y}<br>Est. suspected: "
+                "%{y:.0f}<extra></extra>",
+            ))
     fig.update_layout(
         title=dict(text="Daily new cases (interpolated)",
                    font=dict(size=15, color="#1f4e79"), x=0.01),
