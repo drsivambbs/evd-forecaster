@@ -735,7 +735,7 @@ def build_excel_report() -> bytes:
                 f" CFR backcalculation active "
                 f"(CFR = {ss.get('cfr_pct_active', '?')}%, "
                 f"role = {ss.get('cfr_role_active', 'Total cases')}): "
-                f"estimated true cumulative "
+                f"estimated cumulative "
                 f"= {float(series['cumulative_cfr_estimated'].iloc[-1]):,.0f}."
             )
         narrative.append(_line)
@@ -985,7 +985,7 @@ def cfr_active_badge():
             f'border-radius:5px; font-size:0.85rem; color:#3b1455;">'
             f'<b>CFR backcalculation active</b> — '
             f'CFR = {pct}%, treated as <b>{role}</b>. '
-            f'Inputs below are sourced from estimated true cases.'
+            f'Inputs below are sourced from estimated cases.'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1303,9 +1303,9 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
             out[f"{col}_raw"] = out[col].astype(float)
             out[col] = (out[col].astype(float)
                         .rolling(window=w, min_periods=1).mean())
-    # Standalone-smoothed copy of the CFR-calculated incidence. Kept in a
+    # Standalone-smoothed copy of the CFR-estimated incidence. Kept in a
     # separate column (not overwritten) so the raw CFR estimate in
-    # new_cfr_estimated is preserved for the "Calculated Confirmed" option and
+    # new_cfr_estimated is preserved for the "Estimated Confirmed" option and
     # the Step 1 table. Uses the SAME window as the actual-case smoothing.
     if "new_cfr_estimated" in out.columns:
         out["new_cfr_estimated_smooth"] = (
@@ -1347,7 +1347,7 @@ def daily_chart(series: pd.DataFrame) -> go.Figure:
     if "new_cfr_estimated" in series.columns:
         fig.add_trace(go.Scatter(
             x=series["date"], y=series["new_cfr_estimated"],
-            mode="lines", name="CFR-estimated true new cases",
+            mode="lines", name="Estimated new cases (CFR)",
             line=dict(color="#6a1b9a", width=2.4, dash="solid"),
             hovertemplate="%{x|%d %b %Y}<br>CFR estimate: %{y:.0f}<extra></extra>",
         ))
@@ -1399,7 +1399,7 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
     if "cumulative_cfr_estimated" in series.columns:
         fig.add_trace(go.Scatter(
             x=series["date"], y=series["cumulative_cfr_estimated"],
-            mode="lines", name="CFR-estimated true cumulative cases",
+            mode="lines", name="Estimated cumulative cases (CFR)",
             line=dict(color="#6a1b9a", width=2.4),
             hovertemplate="%{x|%d %b %Y}<br>CFR cumulative: %{y:.0f}<extra></extra>",
         ))
@@ -1516,11 +1516,11 @@ def _resolve_rt_col(daily: pd.DataFrame, source: str) -> str:
       - "confirmed" / "suspected"  → Actual observed counts. When Step 1
         smoothing is on it overwrote new_confirmed/new_suspected in place and
         kept the originals in <col>_raw, so read the raw copy if it exists.
-      - "cfr"                       → Calculated Confirmed: the raw CFR
+      - "cfr"                       → Estimated Confirmed: the raw CFR
         back-calculated incidence (new_cfr_estimated), never overwritten.
       - "confirmed_smooth" / "suspected_smooth" → the smoothed values, which
         live in the base column after Step 1 smoothing.
-      - "cfr_smooth"                → Smoothed Calculated Confirmed: the
+      - "cfr_smooth"                → Smoothed Estimated Confirmed: the
         standalone-smoothed CFR copy (new_cfr_estimated_smooth)."""
     if source == "confirmed":
         return ("new_confirmed_raw" if "new_confirmed_raw" in daily.columns
@@ -1546,7 +1546,7 @@ def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
                      incidence_source: str = "confirmed") -> pd.DataFrame:
     """Build per-day R_t estimates. `incidence_source` selects which series
     feeds the Cori estimator — see _resolve_rt_col for the six keys (Actual /
-    Calculated Confirmed/Suspected, raw or smoothed)."""
+    Estimated Confirmed/Suspected, raw or smoothed)."""
     col = _resolve_rt_col(daily, incidence_source)
     if col not in daily.columns:
         col = "new_confirmed"
@@ -2324,7 +2324,7 @@ if st.session_state["step"] == "help":
         "TPR — Test positivity rate",
         "0.192 (DRC 2026)",
         "Fraction of laboratory tests that return positive. Used here as a "
-        "rough scaling factor for suspected → estimated true incidence. "
+        "rough scaling factor for suspected → estimated incidence. "
         "Strictly not equivalent to under-ascertainment.",
         "Out of all the samples sent to the lab, what fraction came back "
         "positive.",
@@ -2523,7 +2523,7 @@ if st.session_state["step"] == "help":
     gentry(
         "CFR Backcalculation (optional)",
         "CFR 24% / 30% / 40% / Custom; SMA None / 3 / 5 / 7-day",
-        "Estimates true incidence from observed deaths under the assumption that "
+        "Estimates incidence from observed deaths under the assumption that "
         "deaths are better counted than cases. Cumulative deaths divided by the CFR "
         "gives a naive estimate; the phase-bias multiplier "
         "(1 + r/β)<sup>α</sup> corrects it for the fact that during exponential "
@@ -3364,7 +3364,7 @@ if st.session_state["step"] == "forecast":
             seed_susp = series_in["new_suspected"].astype(float).values
 
             # CFR backcalculation override (from Step 1). If active, substitute
-            # the estimated true-case series into the role chosen by the user.
+            # the estimated-case series into the role chosen by the user.
             if (st.session_state.get("cfr_active")
                     and "new_cfr_estimated" in series_in.columns):
                 cfr_est = series_in["new_cfr_estimated"].astype(float).values
@@ -3742,7 +3742,7 @@ if st.session_state["step"] == "rt":
                     unsafe_allow_html=True)
         cfr_role_active = st.session_state.get("cfr_role_active", "Total cases")
         # Availability of each incidence source is driven by what Step 1
-        # produced. Actual Confirmed/Suspected are always present. Calculated
+        # produced. Actual Confirmed/Suspected are always present. Estimated
         # (CFR back-calc) needs the Step 1 CFR toggle. Smoothed variants need
         # Step 1 standalone smoothing (detected via the preserved _raw columns).
         has_cfr = (st.session_state.get("cfr_active", False)
@@ -3755,17 +3755,17 @@ if st.session_state["step"] == "rt":
         SRC_MENU = [
             ("Actual Confirmed",              "confirmed",        True),
             ("Actual Suspected",              "suspected",        True),
-            ("Calculated Confirmed",          "cfr",              has_cfr),
+            ("Estimated Confirmed",           "cfr",              has_cfr),
             ("Smoothed Actual Confirmed",     "confirmed_smooth", has_smooth),
             ("Smoothed Actual Suspected",     "suspected_smooth", has_smooth),
-            ("Smoothed Calculated Confirmed", "cfr_smooth",       has_cfr_smooth),
+            ("Smoothed Estimated Confirmed",  "cfr_smooth",       has_cfr_smooth),
         ]
         options = [lbl for (lbl, _k, ok) in SRC_MENU if ok]
         label_to_src = {lbl: k for (lbl, k, ok) in SRC_MENU if ok}
 
         # Sensible default mirrors the CFR role chosen in Step 1.
         if has_cfr and cfr_role_active == "Total cases":
-            default_label = "Calculated Confirmed"
+            default_label = "Estimated Confirmed"
         elif cfr_role_active == "Suspected":
             default_label = "Actual Suspected"
         else:
@@ -3775,9 +3775,9 @@ if st.session_state["step"] == "rt":
 
         help_text = (
             "Actual = observed case counts. "
-            "Calculated = true infections back-calculated from deaths via the "
-            "CFR (Step 1). Smoothed = trailing moving average using the Step 1 "
-            "smoothing window. Calculated / Smoothed options appear only when "
+            "Estimated = infections back-calculated from deaths via the CFR "
+            "(Step 1). Smoothed = trailing moving average using the Step 1 "
+            "smoothing window. Estimated / Smoothed options appear only when "
             "they were enabled in Step 1."
         )
         # Drop a stale persisted label if it is no longer offered (e.g. the
