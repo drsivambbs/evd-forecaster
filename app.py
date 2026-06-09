@@ -1279,6 +1279,14 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
             out[f"{col}_raw"] = out[col].astype(float)
             out[col] = (out[col].astype(float)
                         .rolling(window=w, min_periods=1).mean())
+    # Standalone-smoothed copy of the CFR-calculated incidence. Kept in a
+    # separate column (not overwritten) so the raw CFR estimate in
+    # new_cfr_estimated is preserved for the "Calculated Confirmed" option and
+    # the Step 1 table. Uses the SAME window as the actual-case smoothing.
+    if "new_cfr_estimated" in out.columns:
+        out["new_cfr_estimated_smooth"] = (
+            out["new_cfr_estimated"].astype(float)
+            .rolling(window=w, min_periods=1).mean())
     out.attrs["smooth_window"] = w
     return out
 
@@ -1477,25 +1485,46 @@ def estimate_rt(incidence: np.ndarray, si_mean: float, si_sd: float,
     return records
 
 
+def _resolve_rt_col(daily: pd.DataFrame, source: str) -> str:
+    """Map a Step 2 incidence-source key to the actual DataFrame column.
+
+    Six keys, three families × {actual, smoothed}:
+      - "confirmed" / "suspected"  → Actual observed counts. When Step 1
+        smoothing is on it overwrote new_confirmed/new_suspected in place and
+        kept the originals in <col>_raw, so read the raw copy if it exists.
+      - "cfr"                       → Calculated Confirmed: the raw CFR
+        back-calculated incidence (new_cfr_estimated), never overwritten.
+      - "confirmed_smooth" / "suspected_smooth" → the smoothed values, which
+        live in the base column after Step 1 smoothing.
+      - "cfr_smooth"                → Smoothed Calculated Confirmed: the
+        standalone-smoothed CFR copy (new_cfr_estimated_smooth)."""
+    if source == "confirmed":
+        return ("new_confirmed_raw" if "new_confirmed_raw" in daily.columns
+                else "new_confirmed")
+    if source == "suspected":
+        return ("new_suspected_raw" if "new_suspected_raw" in daily.columns
+                else "new_suspected")
+    if source == "cfr":
+        return "new_cfr_estimated"
+    if source == "confirmed_smooth":
+        return "new_confirmed"
+    if source == "suspected_smooth":
+        return "new_suspected"
+    if source == "cfr_smooth":
+        return "new_cfr_estimated_smooth"
+    return "new_confirmed"
+
+
 def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
                      window: int, shape_prior: float, rate_prior: float,
                      run_sensitivity: bool, sens_mean: float,
                      sens_sd: float,
                      incidence_source: str = "confirmed") -> pd.DataFrame:
     """Build per-day R_t estimates. `incidence_source` selects which series
-    feeds the Cori estimator:
-      - "confirmed" (default): daily["new_confirmed"] — lab-confirmed only,
-        consistent with WHO surveillance reporting. Recommended.
-      - "suspected": daily["new_suspected"] — broader, but only ~TPR fraction
-        are true positives. Use as a sensitivity check; R_t can look biased
-        high or noisier.
-      - "cfr": daily["new_cfr_estimated"] — CFR-backcalculated true incidence
-        (only present when the Step 1 CFR toggle is on)."""
-    if incidence_source == "cfr" and "new_cfr_estimated" in daily.columns:
-        col = "new_cfr_estimated"
-    elif incidence_source == "suspected":
-        col = "new_suspected"
-    else:
+    feeds the Cori estimator — see _resolve_rt_col for the six keys (Actual /
+    Calculated Confirmed/Suspected, raw or smoothed)."""
+    col = _resolve_rt_col(daily, incidence_source)
+    if col not in daily.columns:
         col = "new_confirmed"
     incidence = daily[col].astype(float).values
     dates = pd.to_datetime(daily["date"]).values
@@ -3687,54 +3716,59 @@ if st.session_state["step"] == "rt":
 
         st.markdown('<div class="section-label">Incidence source</div>',
                     unsafe_allow_html=True)
-        cfr_on = (st.session_state.get("cfr_active", False)
-                  and "new_cfr_estimated" in series_in.columns)
         cfr_role_active = st.session_state.get("cfr_role_active", "Total cases")
-        if cfr_on:
-            options = ["Confirmed", "Suspected", "CFR-estimated"]
-            if cfr_role_active == "Total cases":
-                default_label = "CFR-estimated"
-            elif cfr_role_active == "Suspected":
-                default_label = "Suspected"
-            else:
-                default_label = "Confirmed"
-            prev = st.session_state.get("rt_incidence_source_label",
-                                        default_label)
-            if prev not in options:
-                prev = default_label
-            help_text = (
-                "Confirmed: lab-confirmed cases. "
-                "Suspected: broader case definition (only ~TPR true positives). "
-                "CFR-estimated: true cases backcalculated from deaths in Step 1."
-            )
+        # Availability of each incidence source is driven by what Step 1
+        # produced. Actual Confirmed/Suspected are always present. Calculated
+        # (CFR back-calc) needs the Step 1 CFR toggle. Smoothed variants need
+        # Step 1 standalone smoothing (detected via the preserved _raw columns).
+        has_cfr = (st.session_state.get("cfr_active", False)
+                   and "new_cfr_estimated" in series_in.columns)
+        has_smooth = "new_confirmed_raw" in series_in.columns
+        has_cfr_smooth = (has_cfr
+                          and "new_cfr_estimated_smooth" in series_in.columns)
+
+        # (label, source-key, available?) — built in display order.
+        SRC_MENU = [
+            ("Actual Confirmed",              "confirmed",        True),
+            ("Actual Suspected",              "suspected",        True),
+            ("Calculated Confirmed",          "cfr",              has_cfr),
+            ("Smoothed Actual Confirmed",     "confirmed_smooth", has_smooth),
+            ("Smoothed Actual Suspected",     "suspected_smooth", has_smooth),
+            ("Smoothed Calculated Confirmed", "cfr_smooth",       has_cfr_smooth),
+        ]
+        options = [lbl for (lbl, _k, ok) in SRC_MENU if ok]
+        label_to_src = {lbl: k for (lbl, k, ok) in SRC_MENU if ok}
+
+        # Sensible default mirrors the CFR role chosen in Step 1.
+        if has_cfr and cfr_role_active == "Total cases":
+            default_label = "Calculated Confirmed"
+        elif cfr_role_active == "Suspected":
+            default_label = "Actual Suspected"
         else:
-            options = ["Confirmed", "Suspected"]
-            prev = "Confirmed" if st.session_state.get(
-                "rt_incidence_source", "confirmed") == "confirmed" else "Suspected"
-            help_text = (
-                "Confirmed (default, recommended): lab-confirmed cases, "
-                "consistent with WHO surveillance. "
-                "Suspected: broader case definition — only ~TPR fraction "
-                "are true positives, so R_t can look biased high or noisier. "
-                "Use as a sensitivity check."
-            )
-        # If a stale value (e.g. "CFR-estimated" after the user disabled CFR
-        # and regenerated) is in session state, drop it so Streamlit doesn't
-        # crash on the radio. The `index=` argument cannot override an
-        # existing widget-state value.
-        if (st.session_state.get("rt_incidence_source_label") not in options):
+            default_label = "Actual Confirmed"
+        if default_label not in options:
+            default_label = "Actual Confirmed"
+
+        help_text = (
+            "Actual = observed case counts. "
+            "Calculated = true infections back-calculated from deaths via the "
+            "CFR (Step 1). Smoothed = trailing moving average using the Step 1 "
+            "smoothing window. Calculated / Smoothed options appear only when "
+            "they were enabled in Step 1."
+        )
+        # Drop a stale persisted label if it is no longer offered (e.g. the
+        # user disabled smoothing/CFR and regenerated Step 1) so Streamlit does
+        # not crash — the index= argument cannot override existing widget state.
+        if st.session_state.get("rt_incidence_source_label") not in options:
             st.session_state.pop("rt_incidence_source_label", None)
-        incidence_source_label = st.radio(
+        incidence_source_label = st.selectbox(
             "Which series drives R_t?",
             options,
-            index=options.index(prev),
-            horizontal=True,
+            index=options.index(default_label),
             key="rt_incidence_source_label",
             help=help_text,
         )
-        incidence_source = {"Confirmed": "confirmed",
-                            "Suspected": "suspected",
-                            "CFR-estimated": "cfr"}[incidence_source_label]
+        incidence_source = label_to_src[incidence_source_label]
         st.session_state["rt_incidence_source"] = incidence_source
 
         st.markdown('<div class="section-label">Serial interval (primary)</div>',
