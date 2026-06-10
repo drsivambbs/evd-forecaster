@@ -138,7 +138,9 @@ def build_excel_report() -> bytes:
     eoo_probs = ss.get("eoo_probs")
     eoo_days = ss.get("eoo_days")
     valid_plc = ss.get("eoo_valid_plc")
-    si_used = float(ss.get("si_mean_primary_val", 15.3))
+    # Stable SI key from Step 2 (widget keys are dropped on navigation, which
+    # would make this filter miss the rt_df rows in the exported report).
+    si_used = float(ss.get("rt_si_mean", 15.3))
 
     sections = []
     sections.append((
@@ -269,9 +271,9 @@ def build_excel_report() -> bytes:
         ("Step 1 — Data", None, None, None, None),
         ("Scenario name", ss.get("scenario_name", ""), None, "string", None),
         ("Step 2 — R_t estimation", None, None, None, None),
-        ("SI mean primary (days)", 15.3, "si_mean_primary_val", "float",
+        ("SI mean primary (days)", 15.3, "rt_si_mean", "float",
          "si_mean_primary_src"),
-        ("SI SD primary (days)", 9.3, "si_sd_primary_val", "float",
+        ("SI SD primary (days)", 9.3, "rt_si_sd", "float",
          "si_sd_primary_src"),
         ("Sensitivity SI mean (days)", 12.0, "si_mean_sens_val", "float",
          "si_mean_sens_src"),
@@ -440,7 +442,7 @@ def build_excel_report() -> bytes:
     if rt_df is not None and not rt_df.empty:
         ws = wb.create_sheet("Step 2 — R_t")
         _write_title_block(ws, "Step 2 — R_t estimation",
-                            f"Cori 2013 sliding-window, SI Gamma({ss.get('si_mean_primary_val', 15.3)}, {ss.get('si_sd_primary_val', 9.3)})")
+                            f"Cori 2013 sliding-window, SI Gamma({ss.get('rt_si_mean', 15.3)}, {ss.get('rt_si_sd', 9.3)})")
 
         # Embed R_t chart (from session_state — set when Step 2 rendered)
         _fig_rt = ss.get("chart_rt")
@@ -984,7 +986,7 @@ INPUT_STATE_KEYS = [
     "S1_target", "S1_days", "S2_target", "S2_days", "S3_target", "S3_days",
     "eoo_n_sim", "eoo_max_days", "eoo_threshold", "eoo_k_disp",
     "fc_y_log", "result_series", "result_chart_snaps", "rt_df",
-    "rt_si_mean", "fc_scenarios", "fc_dates", "fc_baselines",
+    "rt_si_mean", "rt_si_sd", "fc_scenarios", "fc_dates", "fc_baselines",
     "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
     "fc_preview_traj", "fc_preview_dates",
     "eoo_days", "eoo_probs", "eoo_valid_plc",
@@ -2743,7 +2745,10 @@ if st.session_state["step"] == "eoo":
     scenarios_out = st.session_state["fc_scenarios"]
     horizon_dates = st.session_state["fc_dates"]
     rt_df = st.session_state["rt_df"]
-    si_mean_used = float(st.session_state.get("si_mean_primary_val", 15.3))
+    # Stable SI keys saved by Step 2 (see Step 2 "Estimate R_t"). Using the
+    # widget key here previously made this filter miss every row when the user
+    # changed the SI, producing a false "No R_t estimates" error.
+    si_mean_used = float(st.session_state.get("rt_si_mean", 15.3))
 
     # Latest R_t — use the Gamma posterior parameters directly (no Normal SD approx).
     primary = rt_df[rt_df["si_mean_used"] == si_mean_used].dropna(
@@ -2769,7 +2774,7 @@ if st.session_state["step"] == "eoo":
     if rt_mean_latest > 0 and rt_selected > 0:
         _scale = rt_selected / rt_mean_latest
         rt_rate_post = rt_rate_post / _scale
-    si_sd_used = float(st.session_state.get("si_sd_primary_val", 9.3))
+    si_sd_used = float(st.session_state.get("rt_si_sd", 9.3))
 
     def projected_last_case(scen_key: str):
         data = scenarios_out[scen_key]
@@ -3072,8 +3077,10 @@ if st.session_state["step"] == "forecast":
     series_in = st.session_state["result_series"]
     rt_starting = float(st.session_state.get("selected_rt", 4.0))
     rt_basis = st.session_state.get("selected_rt_basis", "Latest")
-    si_mean_used = float(st.session_state.get("si_mean_primary_val", 15.3))
-    si_sd_used = float(st.session_state.get("si_sd_primary_val", 9.3))
+    # Read the serial interval from the stable keys saved by Step 2's
+    # "Estimate R_t" (not the widget keys, which are dropped on navigation).
+    si_mean_used = float(st.session_state.get("rt_si_mean", 15.3))
+    si_sd_used = float(st.session_state.get("rt_si_sd", 9.3))
     si_src_used = st.session_state.get("si_mean_primary_src",
                                        "https://doi.org/10.1056/NEJMoa1411100")
 
@@ -3766,10 +3773,16 @@ if st.session_state["step"] == "rt":
 
         st.markdown('<div class="section-label">Serial interval (primary)</div>',
                     unsafe_allow_html=True)
-        si_mean = param_with_source("SI mean (days)", 15.3, "si_mean_primary",
-                                     1.0, 60.0, 0.1)
-        si_sd = param_with_source("SI SD (days)", 9.3, "si_sd_primary",
-                                   0.1, 30.0, 0.1)
+        # Defaults seed from the last-estimated SI (rt_si_mean / rt_si_sd) so
+        # returning to Step 2 re-shows the values you used, not the literals.
+        si_mean = param_with_source(
+            "SI mean (days)",
+            float(st.session_state.get("rt_si_mean", 15.3)),
+            "si_mean_primary", 1.0, 60.0, 0.1)
+        si_sd = param_with_source(
+            "SI SD (days)",
+            float(st.session_state.get("rt_si_sd", 9.3)),
+            "si_sd_primary", 0.1, 30.0, 0.1)
 
         st.markdown('<div class="section-label">Sensitivity SI</div>',
                     unsafe_allow_html=True)
@@ -3815,7 +3828,13 @@ if st.session_state["step"] == "rt":
                 )
             else:
                 st.session_state["rt_df"] = rt_df
+                # Persist the serial interval used for this R_t run in dedicated
+                # (non-widget) keys. Widget keys like si_mean_primary_val are
+                # garbage-collected once Step 2 is navigated away from, so
+                # Step 3/4 must read these stable copies instead — otherwise
+                # they silently fall back to the default SI.
                 st.session_state["rt_si_mean"] = si_mean
+                st.session_state["rt_si_sd"] = si_sd
 
     with right2:
         top_row = st.columns([1, 0.18])
