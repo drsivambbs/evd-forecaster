@@ -3246,6 +3246,36 @@ if st.session_state["step"] == "forecast":
             f"Suspected: {_susp_src_label} · "
             f"Deaths: computed from cases via the CFR below."
         )
+
+        # --- Step 2 ↔ Step 3 consistency check (problem #5) ---
+        # R_t was estimated on ONE stream in Step 2 (rt_incidence_source), and
+        # the forecast applies that R_t to the seeds chosen here. If, for the
+        # SAME case type, Step 2 used Estimated but the forecast seeds Observed
+        # (or vice versa), the growth rate and the projected series describe
+        # different things. We do NOT silently remap (that would fight the
+        # Step 1 CFR role — see Fix #7); instead we surface it so you can align
+        # Step 1's CFR role or Step 2's source deliberately.
+        _rt_src = st.session_state.get("rt_incidence_source", "confirmed")
+        _rt_case = "Suspected" if _rt_src.startswith("suspected") else "Confirmed"
+        _rt_estimated = _rt_src in ("cfr", "cfr_smooth",
+                                    "suspected_est", "suspected_est_smooth")
+        _conf_seed_estimated = bool(
+            _cfr_on and _cfr_role_fc in ("Confirmed", "Total cases"))
+        _susp_seed_estimated = bool(
+            (_cfr_on and _cfr_role_fc == "Suspected") or _susp_est_on)
+        _seed_estimated = (_conf_seed_estimated if _rt_case == "Confirmed"
+                           else _susp_seed_estimated)
+        _seed_lbl = (_conf_src_label if _rt_case == "Confirmed"
+                     else _susp_src_label)
+        if _rt_estimated != _seed_estimated:
+            st.warning(
+                f"**R_t / forecast mismatch.** R_t was estimated on "
+                f"**{'Estimated' if _rt_estimated else 'Observed'} {_rt_case}** "
+                f"in Step 2, but the forecast seeds {_rt_case} from "
+                f"**{_seed_lbl}**. For a coherent forecast these should describe "
+                f"the same series — adjust the CFR role in Step 1 or the R_t "
+                f"source in Step 2 so they match."
+            )
         b1, b2, b3 = st.columns(3)
         with b1:
             obs_conf = st.number_input(
