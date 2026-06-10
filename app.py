@@ -2733,34 +2733,6 @@ if st.session_state["step"] == "help":
         "infect nobody, but a few <b>superspreaders</b> infect many. EBOV has small k.",
     )
 
-    st.markdown(
-        '<div style="margin-top:1.8rem; padding:0.9rem 1.1rem; background:#fafbfc; '
-        'border-left:4px solid #1f4e79; border-radius:4px; font-size:0.85rem; '
-        'color:#333; line-height:1.55;">'
-        '<b style="color:#1f4e79;">Key references</b><br>'
-        '<ul style="margin:0.4rem 0 0 1.2rem;">'
-        '<li>Cori A et al. (2013) <i>Am J Epidemiol</i> 178:1505. '
-        '<a href="https://doi.org/10.1093/aje/kwt133" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.1093/aje/kwt133</a></li>'
-        '<li>Nouvellet P et al. (2018) <i>Epidemics</i> 22:3. '
-        '<a href="https://doi.org/10.1016/j.epidem.2017.02.012" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.1016/j.epidem.2017.02.012</a></li>'
-        '<li>WHO Ebola Response Team (2014) <i>N Engl J Med</i> 371:1481. '
-        '<a href="https://doi.org/10.1056/NEJMoa1411100" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.1056/NEJMoa1411100</a></li>'
-        '<li>Lloyd-Smith JO et al. (2005) <i>Nature</i> 438:355. '
-        '<a href="https://doi.org/10.1038/nature04153" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.1038/nature04153</a></li>'
-        '<li>Wamala JF et al. (2010) <i>Emerg Infect Dis</i> 16:1087. '
-        '<a href="https://doi.org/10.3201/eid1607.090536" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.3201/eid1607.090536</a></li>'
-        '<li>Legrand J et al. (2007) <i>Epidemiol Infect</i> 135:610. '
-        '<a href="https://doi.org/10.1017/S0950268806007217" target="_blank" rel="noopener" '
-        'style="color:#1f4e79;">10.1017/S0950268806007217</a></li>'
-        '</ul></div>',
-        unsafe_allow_html=True,
-    )
-
     st.stop()
 
 
@@ -2921,16 +2893,6 @@ if st.session_state["step"] == "eoo":
                 help="NB dispersion. Small k = more superspreading. "
                      "EBOV ≈ 0.18 (Lloyd-Smith 2005, Nature).",
             )
-        st.markdown(
-            '<div style="margin:-0.35rem 0 0.25rem 0; font-size:0.78rem;">'
-            '<a href="https://doi.org/10.1038/nature04153" target="_blank" '
-            'rel="noopener" style="color:#1f4e79; text-decoration:none; '
-            'border-bottom:1px dotted #1f4e79;">'
-            'Lloyd-Smith et al. 2005, Nature — superspreading dispersion k'
-            '</a></div>',
-            unsafe_allow_html=True,
-        )
-
         run_eoo = st.button("Run EOO simulation", type="primary",
                             use_container_width=True,
                             disabled=len(valid_plc) == 0)
