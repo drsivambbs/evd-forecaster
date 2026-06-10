@@ -285,7 +285,7 @@ def build_excel_report() -> bytes:
         ("R_t selected for forecast", None, "selected_rt", "float", None),
         ("R_t basis", "", "selected_rt_basis", "string", None),
         ("Step 3 — Forecast", None, None, None, None),
-        ("CFR", 0.34, "cfr_val", "float", "cfr_src"),
+        ("CFR (fraction)", 0.34, "fc_cfr", "float", "cfr_src"),
         ("Onset-to-death lag (days)", 10, "lag_val", "int", "lag_src"),
         ("Forecast horizon (days)", 365, "forecast_horizon", "int", None),
         ("Forecast start date", "", "forecast_start_date", "string", None),
@@ -985,7 +985,7 @@ INPUT_STATE_KEYS = [
     "obs_conf_input", "obs_susp_input", "obs_death_input",
     "S1_target", "S1_days", "S2_target", "S2_days", "S3_target", "S3_days",
     "eoo_n_sim", "eoo_max_days", "eoo_threshold", "eoo_k_disp",
-    "fc_y_log", "result_series", "result_chart_snaps", "rt_df",
+    "fc_y_log", "fc_cfr", "result_series", "result_chart_snaps", "rt_df",
     "rt_si_mean", "rt_si_sd", "fc_scenarios", "fc_dates", "fc_baselines",
     "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
     "fc_preview_traj", "fc_preview_dates",
@@ -3354,8 +3354,31 @@ if st.session_state["step"] == "forecast":
                 )
             return val
 
-        cfr = disease_param("CFR (case fatality ratio)", 0.34, "cfr",
-                            0.01, 1.0, 0.01)
+        # CFR is a single quantity. Step 1's back-calculation (cases =
+        # deaths / CFR) and this death projection (deaths = cases x CFR) are
+        # inverse uses of the SAME CFR. So when Step 1's CFR back-calculation
+        # was used, inherit that value here (locked) instead of asking a second
+        # time — two different CFRs would be self-contradictory. cfr_pct_active
+        # is a percent; the forecast uses a fraction.
+        if (st.session_state.get("cfr_active")
+                and "cfr_pct_active" in st.session_state):
+            cfr = float(st.session_state["cfr_pct_active"]) / 100.0
+            st.markdown(
+                '<div style="font-size:0.85rem; font-weight:500; '
+                'margin:0.45rem 0 0.3rem 0; color:#333;">'
+                'CFR (case fatality ratio)</div>',
+                unsafe_allow_html=True)
+            st.markdown(
+                frozen_card("CFR — inherited from Step 1", f"{cfr * 100:.1f}%",
+                            "Same CFR as the Step 1 back-calculation. "
+                            "Change it in Step 1."),
+                unsafe_allow_html=True)
+        else:
+            cfr = disease_param("CFR (case fatality ratio)", 0.34, "cfr",
+                                0.01, 1.0, 0.01)
+        # Stable copy of the CFR the forecast actually uses, for the export
+        # sheet (the editable widget key is dropped once you leave Step 3).
+        st.session_state["fc_cfr"] = cfr
         death_lag = disease_param("Onset-to-death lag (days)", 10, "lag",
                                    0, 60, 1, is_int=True)
 
