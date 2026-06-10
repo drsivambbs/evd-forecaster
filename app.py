@@ -1667,17 +1667,35 @@ def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
 # =========================================================================
 # Forecast (renewal equation, Nouvellet et al. 2018) — port of who_forecast.py
 # =========================================================================
-def project_renewal(seed_series: np.ndarray, rt_trajectory: np.ndarray,
-                    horizon: int, weights: np.ndarray) -> np.ndarray:
-    seed = np.asarray(seed_series, dtype=float)
+def _project_renewal_batch(seed: np.ndarray, rt_traj_2d: np.ndarray,
+                           horizon: int, weights: np.ndarray) -> np.ndarray:
+    """Vectorised renewal projection across many R_t trajectories at once.
+
+    seed       : 1-D observed incidence, shared by every trajectory.
+    rt_traj_2d : (n_sim, horizon) — one R_t trajectory per sample.
+    weights    : serial-interval weights.
+    Returns (n_sim, horizon) projected new incidence. Row i is identical (up to
+    floating-point rounding) to the scalar recurrence
+        I_t = R_t · Σ_{s=1}^{min(t, len(w))} w_{s-1} · I_{t-s}
+    run for trajectory i. The time loop stays (each day depends on earlier
+    projected days) but all samples advance together, and the per-day
+    convolution is a single matrix–vector product instead of a Python sum.
+    """
+    seed = np.asarray(seed, dtype=float)
     n_seed = len(seed)
-    full = np.concatenate([seed, np.zeros(horizon)])
+    n_sim = rt_traj_2d.shape[0]
+    n_w = len(weights)
+    full = np.zeros((n_sim, n_seed + horizon))
+    full[:, :n_seed] = seed                       # broadcast seed to every row
     for k in range(horizon):
         t = n_seed + k
-        s_max = min(t, len(weights))
-        contrib = sum(weights[s - 1] * full[t - s] for s in range(1, s_max + 1))
-        full[t] = rt_trajectory[k] * contrib
-    return full[n_seed:]
+        s_max = min(t, n_w)
+        # window columns are [t-s_max .. t-1]; reversed they line up with
+        # weights[0..s_max-1] so the dot = Σ w_{s-1}·full[t-s].
+        window = full[:, t - s_max:t]
+        contrib = window[:, ::-1] @ weights[:s_max]
+        full[:, t] = rt_traj_2d[:, k] * contrib
+    return full[:, n_seed:]
 
 
 def run_scenario_uncertain(seed_conf, seed_susp, rt_start_samples,
@@ -1689,26 +1707,55 @@ def run_scenario_uncertain(seed_conf, seed_susp, rt_start_samples,
     rt_start_samples : 1-D array of starting R_t values sampled from the Cori
     Gamma posterior. Each becomes a linearly-declining trajectory to `target`
     over `days_to_target` days, then plateaus.
+
+    Vectorised across the R_t samples (and the per-day serial-interval
+    convolution) for speed; numerically identical to projecting each sample
+    one at a time.
     """
+    rt_start_samples = np.asarray(rt_start_samples, dtype=float)
     n_sim = len(rt_start_samples)
-    cum_conf = np.zeros((n_sim, horizon))
-    cum_susp = np.zeros((n_sim, horizon))
-    cum_death = np.zeros((n_sim, horizon))
-    new_conf = np.zeros((n_sim, horizon))
-    new_susp = np.zeros((n_sim, horizon))
+    seed_conf = np.asarray(seed_conf, dtype=float)
+    seed_susp = np.asarray(seed_susp, dtype=float)
+    n_seed = len(seed_conf)
+
+    # Serial-interval weights (discretised Gamma), normalised to sum 1.
+    shape = (si_mean / si_sd) ** 2
+    scale = si_sd ** 2 / si_mean
+    n_w = horizon + n_seed
+    s = np.arange(1, n_w + 1, dtype=float)
+    weights = gamma_dist.cdf(s + 0.5, a=shape, scale=scale) - \
+              gamma_dist.cdf(s - 0.5, a=shape, scale=scale)
+    if weights.sum() > 0:
+        weights = weights / weights.sum()
+
+    # R_t trajectory per sample: linear ramp from each sampled start to `target`
+    # over days_to_target, then a plateau — build_rt_trajectory for all at once.
+    d2t = max(1, min(int(days_to_target), int(horizon)))
+    frac = np.linspace(0.0, 1.0, d2t)
+    ramp = (rt_start_samples[:, None] * (1.0 - frac)[None, :]
+            + target * frac[None, :])
+    plateau = np.full((n_sim, horizon - d2t), float(target))
+    rt_traj_2d = np.concatenate([ramp, plateau], axis=1)
+
+    new_conf = _project_renewal_batch(seed_conf, rt_traj_2d, horizon, weights)
+    new_susp = _project_renewal_batch(seed_susp, rt_traj_2d, horizon, weights)
+
+    # Deaths on day t = cfr · confirmed on day (t - death_lag), drawing on the
+    # observed seed history for the first death_lag days. Same rule as the
+    # scalar version, expressed as a single shifted slice.
+    combined = np.concatenate(
+        [np.broadcast_to(seed_conf, (n_sim, n_seed)), new_conf], axis=1)
     new_death = np.zeros((n_sim, horizon))
-    for i, rt_start in enumerate(rt_start_samples):
-        traj = build_rt_trajectory(float(rt_start), target,
-                                    days_to_target, horizon)
-        r = run_scenario(seed_conf, seed_susp, traj, horizon,
-                          obs_conf, obs_susp, obs_deaths, cfr, death_lag,
-                          si_mean, si_sd)
-        cum_conf[i] = r["cum_confirmed"]
-        cum_susp[i] = r["cum_suspected"]
-        cum_death[i] = r["cum_deaths"]
-        new_conf[i] = r["new_confirmed"]
-        new_susp[i] = r["new_suspected"]
-        new_death[i] = r["new_deaths"]
+    src_start = n_seed - death_lag        # combined-array index feeding day t=0
+    t0 = max(0, -src_start)               # earlier days have no valid source → 0
+    if t0 < horizon:
+        i0 = src_start + t0
+        count = horizon - t0
+        new_death[:, t0:t0 + count] = cfr * combined[:, i0:i0 + count]
+
+    cum_conf = obs_conf + np.cumsum(new_conf, axis=1)
+    cum_susp = obs_susp + np.cumsum(new_susp, axis=1)
+    cum_death = obs_deaths + np.cumsum(new_death, axis=1)
 
     def _stats(arr):
         return {
@@ -1723,40 +1770,6 @@ def run_scenario_uncertain(seed_conf, seed_susp, rt_start_samples,
         "new_confirmed": _stats(new_conf),
         "new_suspected": _stats(new_susp),
         "new_deaths":    _stats(new_death),
-    }
-
-
-def run_scenario(seed_conf, seed_susp, rt_traj, horizon, obs_conf, obs_susp,
-                 obs_deaths, cfr, death_lag, si_mean, si_sd):
-    shape = (si_mean / si_sd) ** 2
-    scale = si_sd ** 2 / si_mean
-    n_w = horizon + len(seed_conf)
-    s = np.arange(1, n_w + 1, dtype=float)
-    weights = gamma_dist.cdf(s + 0.5, a=shape, scale=scale) - \
-              gamma_dist.cdf(s - 0.5, a=shape, scale=scale)
-    if weights.sum() > 0:
-        weights = weights / weights.sum()
-
-    proj_conf = project_renewal(seed_conf, rt_traj, horizon, weights)
-    proj_susp = project_renewal(seed_susp, rt_traj, horizon, weights)
-
-    new_deaths = np.zeros(horizon)
-    for t in range(horizon):
-        src_idx = t - death_lag
-        if src_idx >= 0:
-            new_deaths[t] = cfr * proj_conf[src_idx]
-        else:
-            back_t = -src_idx
-            if back_t <= len(seed_conf):
-                new_deaths[t] = cfr * seed_conf[-back_t]
-
-    return {
-        "new_confirmed": proj_conf,
-        "new_suspected": proj_susp,
-        "new_deaths": new_deaths,
-        "cum_confirmed": obs_conf + np.cumsum(proj_conf),
-        "cum_suspected": obs_susp + np.cumsum(proj_susp),
-        "cum_deaths": obs_deaths + np.cumsum(new_deaths),
     }
 
 
