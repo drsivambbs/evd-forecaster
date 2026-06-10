@@ -1282,58 +1282,25 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
 
 
 def chart_with_line_filter(fig: go.Figure, key: str,
-                           label: str = "Show / hide lines") -> None:
-    """Render a Plotly figure preceded by a popover of checkboxes — one per
-    legend line — so the user can display only the series they care about.
+                           hint: bool = True) -> None:
+    """Render a Plotly figure and let its legend act as the line filter.
 
-    Lines are matched by ``legendgroup`` (falling back to the trace ``name``),
-    so companion traces such as confidence-interval bands and baseline markers
-    toggle together with the line they belong to. Deselected lines are set to
-    ``visible="legendonly"`` (hidden from the plot but still re-enableable via
-    the Plotly legend). Because the figure object is mutated in place, any PNG
-    export of the same object reflects the current selection.
+    Plotly legends are already click-to-toggle: a single click on a legend
+    entry hides that line (``visible="legendonly"``) and clicking again brings
+    it back, while a double-click isolates a single line. Companion traces such
+    as confidence-interval bands and baseline markers share each line's
+    ``legendgroup``, so they hide and show together with it. A short caption
+    points users at this behaviour.
     """
-    # Collect selectable legend entries, in order of first appearance.
-    entries: list[str] = []        # unique display names, ordered
-    group_to_name: dict[str, str] = {}   # legendgroup -> display name
-    for tr in fig.data:
-        nm = getattr(tr, "name", None)
-        if nm and getattr(tr, "showlegend", None) is not False:
-            if nm not in entries:
-                entries.append(nm)
-            grp = getattr(tr, "legendgroup", None)
-            if grp:
-                group_to_name[grp] = nm
-
-    # Nothing to filter (0 or 1 line) — just draw the chart.
-    if len(entries) <= 1:
-        st.plotly_chart(fig, use_container_width=True, key=key)
-        return
-
-    def _slug(s: str) -> str:
-        return "".join(ch if ch.isalnum() else "_" for ch in s)
-
-    selected: set[str] = set()
-    with st.popover(f"☰ {label}", use_container_width=False):
-        b_all, b_none = st.columns(2)
-        if b_all.button("All", key=f"{key}_all", use_container_width=True):
-            for e in entries:
-                st.session_state[f"{key}_cb_{_slug(e)}"] = True
-        if b_none.button("None", key=f"{key}_none", use_container_width=True):
-            for e in entries:
-                st.session_state[f"{key}_cb_{_slug(e)}"] = False
-        for e in entries:
-            if st.checkbox(e, value=True, key=f"{key}_cb_{_slug(e)}"):
-                selected.add(e)
-
-    # Apply the selection to every trace (lines + their companion traces).
-    for tr in fig.data:
-        grp = getattr(tr, "legendgroup", None)
-        owner = group_to_name.get(grp, getattr(tr, "name", None))
-        if owner in entries:
-            tr.visible = True if owner in selected else "legendonly"
-
+    # Make the toggle behaviour explicit (these are the Plotly defaults, but
+    # we set them so the legend stays a reliable show/hide control).
+    fig.update_layout(legend=dict(itemclick="toggle",
+                                  itemdoubleclick="toggleothers"))
     st.plotly_chart(fig, use_container_width=True, key=key)
+    if hint:
+        st.caption("Tip: click a name in the legend to hide that line; "
+                   "click again to show it. Double-click a name to show only "
+                   "that line.")
 
 
 def daily_chart(series: pd.DataFrame) -> go.Figure:
