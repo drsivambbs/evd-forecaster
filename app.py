@@ -3180,27 +3180,54 @@ if st.session_state["step"] == "forecast":
         _eligible = series_in[pd.to_datetime(series_in["date"]) <= _start_ts]
         _base_row = (_eligible.iloc[-1] if len(_eligible)
                       else series_in.iloc[0])
-        # When CFR backcalculation is active, match the baseline to whichever
-        # role the user picked — otherwise the seed (CFR estimate) and the
-        # baseline (observed) would be on different scales.
+        # Decide the Confirmed and Suspected baselines INDEPENDENTLY so the
+        # seed and the baseline always come from the same series (otherwise
+        # their scales would differ). Precedence — kept identical to the
+        # seeding block and the source labels below; all three must agree.
+        #   Confirmed: CFR estimate if CFR routes there (Confirmed/Total),
+        #              else observed confirmed.
+        #   Suspected: CFR estimate if CFR routes to Suspected; else the
+        #              ratio-based Estimated Suspected (Step 1) if active;
+        #              else 0 when CFR took everything as Total; else observed.
         _cfr_role_fc = st.session_state.get("cfr_role_active", "Total cases")
         _cfr_on = (st.session_state.get("cfr_active")
                    and "cumulative_cfr_estimated" in series_in.columns)
+        _susp_est_on = (st.session_state.get("suspest_active")
+                        and "cumulative_suspected_estimated" in series_in.columns)
         _cfr_cum = float(_base_row.get("cumulative_cfr_estimated", 0)) if _cfr_on else 0.0
-        if _cfr_on and _cfr_role_fc == "Confirmed":
+
+        if _cfr_on and _cfr_role_fc in ("Confirmed", "Total cases"):
             base_conf_default = int(round(_cfr_cum))
-            base_susp_default = int(round(float(_base_row.get("cumulative_suspected", 0))))
-        elif _cfr_on and _cfr_role_fc == "Suspected":
-            base_conf_default = int(round(float(_base_row.get("cumulative_confirmed", 0))))
-            base_susp_default = int(round(_cfr_cum))
-        elif _cfr_on:  # Total cases
-            base_conf_default = int(round(_cfr_cum))
-            base_susp_default = 0
         else:
             base_conf_default = int(round(float(_base_row.get("cumulative_confirmed", 0))))
+
+        if _cfr_on and _cfr_role_fc == "Suspected":
+            base_susp_default = int(round(_cfr_cum))
+        elif _susp_est_on:
+            base_susp_default = int(round(float(
+                _base_row.get("cumulative_suspected_estimated", 0))))
+        elif _cfr_on and _cfr_role_fc == "Total cases":
+            base_susp_default = 0  # CFR total folded into Confirmed
+        else:
             base_susp_default = int(round(float(_base_row.get("cumulative_suspected", 0))))
         base_death_default = int(round(float(
             _base_row.get("cumulative_deaths", 0))))
+
+        # Plain-language labels for which series feeds each slot — shown to the
+        # user below so the forecast seeding is never a black box. These MUST
+        # track the precedence used for the baseline and the seeds above.
+        _conf_src_label = (
+            "Estimated Confirmed (CFR back-calc)"
+            if _cfr_on and _cfr_role_fc in ("Confirmed", "Total cases")
+            else "Observed confirmed")
+        if _cfr_on and _cfr_role_fc == "Suspected":
+            _susp_src_label = "Estimated via CFR back-calc"
+        elif _susp_est_on:
+            _susp_src_label = "Estimated Suspected (ratio, from Step 1)"
+        elif _cfr_on and _cfr_role_fc == "Total cases":
+            _susp_src_label = "Not used (0 — CFR total folded into Confirmed)"
+        else:
+            _susp_src_label = "Observed suspected"
         _baseline_sig = (base_conf_default, base_susp_default,
                           base_death_default)
         if st.session_state.get("fc_baseline_sig") != _baseline_sig:
@@ -3213,6 +3240,11 @@ if st.session_state["step"] == "forecast":
         st.caption(
             f"Auto-filled from your data on {_start_ts:%d %b %Y}. "
             "Edit if you need to override."
+        )
+        st.caption(
+            f"**Forecast is seeded from** — Confirmed: {_conf_src_label} · "
+            f"Suspected: {_susp_src_label} · "
+            f"Deaths: computed from cases via the CFR below."
         )
         b1, b2, b3 = st.columns(3)
         with b1:
@@ -3345,19 +3377,32 @@ if st.session_state["step"] == "forecast":
             seed_conf = series_in["new_confirmed"].astype(float).values
             seed_susp = series_in["new_suspected"].astype(float).values
 
-            # CFR backcalculation override (from Step 1). If active, substitute
-            # the estimated-case series into the role chosen by the user.
-            if (st.session_state.get("cfr_active")
-                    and "new_cfr_estimated" in series_in.columns):
-                cfr_est = series_in["new_cfr_estimated"].astype(float).values
-                role = st.session_state.get("cfr_role_active", "Total cases")
-                if role == "Confirmed":
-                    seed_conf = cfr_est
-                elif role == "Suspected":
-                    seed_susp = cfr_est
-                else:  # Total cases
-                    seed_conf = cfr_est
-                    seed_susp = np.zeros_like(cfr_est)
+            # Pick the Confirmed and Suspected seeds INDEPENDENTLY, using the
+            # SAME precedence as the baseline block above (they must agree):
+            #   Confirmed: CFR estimate if CFR routes there (Confirmed/Total),
+            #              else observed confirmed.
+            #   Suspected: CFR estimate if CFR routes to Suspected; else the
+            #              ratio-based Estimated Suspected (Step 1) if active;
+            #              else 0 when CFR took everything as Total; else observed.
+            _cfr_on = (st.session_state.get("cfr_active")
+                       and "new_cfr_estimated" in series_in.columns)
+            _susp_est_on = (st.session_state.get("suspest_active")
+                            and "new_suspected_estimated" in series_in.columns)
+            _role = st.session_state.get("cfr_role_active", "Total cases")
+            _cfr_est = (series_in["new_cfr_estimated"].astype(float).values
+                        if _cfr_on else None)
+
+            if _cfr_on and _role in ("Confirmed", "Total cases"):
+                seed_conf = _cfr_est
+
+            if _cfr_on and _role == "Suspected":
+                seed_susp = _cfr_est
+            elif _susp_est_on:
+                seed_susp = series_in["new_suspected_estimated"].astype(float).values
+            elif _cfr_on and _role == "Total cases":
+                # CFR total folded into Confirmed → no separate suspected.
+                seed_susp = np.zeros_like(seed_conf)
+            # else: observed suspected (CFR=Confirmed or no CFR) — already set.
 
             # --- Sample R_t starting values from the Cori Gamma posterior ---
             # The user picked a preset (Latest / Mean 7d / etc.) in Step 2,
