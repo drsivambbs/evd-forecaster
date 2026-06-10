@@ -1445,10 +1445,8 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Fig
                      + "<extra></extra>")
             fig.add_trace(go.Scatter(
                 x=snap_sorted["date"], y=snap_sorted[col],
-                mode="lines+markers", name=f"{label} (snapshot)",
+                mode="lines", name=f"{label} (snapshot)",
                 line=dict(color=COLOURS[col], width=1.6, dash="dot"),
-                marker=dict(size=9, symbol="circle", color=COLOURS[col],
-                            line=dict(color="black", width=1)),
                 customdata=customdata,
                 hovertemplate=hover,
             ))
