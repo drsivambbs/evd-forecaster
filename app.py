@@ -3247,6 +3247,20 @@ if st.session_state["step"] == "forecast":
             f"Deaths: computed from cases via the CFR below."
         )
 
+        # --- Suspected-zeroed notice (problem #6) ---
+        # With the DEFAULT CFR role "Total cases", the back-calculated total is
+        # folded entirely into Confirmed and Suspected is set to 0 (to avoid
+        # double-counting). That is intended, but easy to miss — make it loud.
+        if _cfr_on and _cfr_role_fc == "Total cases" and not _susp_est_on:
+            st.warning(
+                "**Suspected = 0 in this forecast.** The CFR role is "
+                "**\"Total cases\"** (the default), so the back-calculated total "
+                "is counted entirely as Confirmed and Suspected is dropped to "
+                "avoid double-counting. To project Suspected separately, set the "
+                "CFR role to **Confirmed** in Step 1, or enable **Estimate "
+                "Suspected** there."
+            )
+
         # --- Step 2 ↔ Step 3 consistency check (problem #5) ---
         # R_t was estimated on ONE stream in Step 2 (rt_incidence_source), and
         # the forecast applies that R_t to the seeds chosen here. If, for the
