@@ -985,7 +985,8 @@ INPUT_STATE_KEYS = [
     "obs_conf_input", "obs_susp_input", "obs_death_input",
     "S1_target", "S1_days", "S2_target", "S2_days", "S3_target", "S3_days",
     "eoo_n_sim", "eoo_max_days", "eoo_threshold", "eoo_k_disp",
-    "fc_y_log", "fc_cfr", "result_series", "result_chart_snaps", "rt_df",
+    "fc_y_log", "fc_independent_y", "fc_cfr", "result_series",
+    "result_chart_snaps", "rt_df",
     "rt_si_mean", "rt_si_sd", "fc_scenarios", "fc_dates", "fc_baselines",
     "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
     "fc_preview_traj", "fc_preview_dates",
@@ -1897,19 +1898,24 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
 
 def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                    labels: dict, y_log: bool = True,
-                   mode: str = "cumulative") -> go.Figure:
+                   mode: str = "cumulative",
+                   independent_y: bool = False) -> go.Figure:
     """One panel per response scenario, each showing 3 series (confirmed /
     suspected / deaths). mode='cumulative' (default) plots cumulative counts
     with the observed baseline as a dotted reference; mode='daily' plots
     daily new cases per day, no baseline line. Always draws 90% PI bands
-    when median/lower/upper dicts are available."""
+    when median/lower/upper dicts are available.
+
+    independent_y=False (default) shares one y-axis across the three panels so
+    scenarios are directly comparable; True gives each panel its own y-axis
+    scale (and its own tick labels), useful when one scenario dwarfs another."""
     panel_order = [s for s in ["S1", "S2", "S3"] if s in scenarios]
     titles = [labels.get(s, s) for s in panel_order]
 
     fig = make_subplots(rows=1, cols=len(panel_order),
                         subplot_titles=titles,
-                        horizontal_spacing=0.09,
-                        shared_yaxes=True)
+                        horizontal_spacing=(0.11 if independent_y else 0.09),
+                        shared_yaxes=not independent_y)
 
     is_daily = mode == "daily"
     if is_daily:
@@ -3584,7 +3590,7 @@ if st.session_state["step"] == "forecast":
                 )
                 for name in scenarios_out
             }
-            tog_l, tog_m, tog_r = st.columns([2, 1, 1])
+            tog_l, tog_m, tog_r, tog_r2 = st.columns([1.7, 1, 1, 1])
             with tog_m:
                 mode_view = st.radio(
                     "View", ["Daily", "Cumulative"], horizontal=True,
@@ -3594,6 +3600,13 @@ if st.session_state["step"] == "forecast":
                 y_log = st.toggle("Log y-axis", value=True,
                                    help="Toggle between log and linear scale.",
                                    key="fc_y_log")
+            with tog_r2:
+                independent_y = st.toggle(
+                    "Independent Y", value=False,
+                    help="Off: all three panels share one y-axis scale "
+                         "(directly comparable). On: each scenario panel gets "
+                         "its own y-axis scale.",
+                    key="fc_independent_y")
             with tog_l:
                 st.caption(
                     f"Forecast for **{scenario_name}** · "
@@ -3604,6 +3617,7 @@ if st.session_state["step"] == "forecast":
                 scenarios_out, horizon_dates, baselines, scen_labels,
                 y_log=bool(y_log),
                 mode=("daily" if mode_view == "Daily" else "cumulative"),
+                independent_y=bool(independent_y),
             )
             st.session_state["chart_forecast"] = _fig_forecast
             chart_with_line_filter(_fig_forecast, key="forecast")
