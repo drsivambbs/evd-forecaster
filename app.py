@@ -289,9 +289,9 @@ def build_excel_report() -> bytes:
         ("Onset-to-death lag (days)", 10, "lag_val", "int", "lag_src"),
         ("Forecast horizon (days)", 365, "forecast_horizon", "int", None),
         ("Forecast start date", "", "forecast_start_date", "string", None),
-        ("S1 target R_t", 1.0, "S1_target", "float", None),
+        ("S1 target R_t", 0.9, "S1_target", "float", None),
         ("S1 days to target", 180, "S1_days", "int", None),
-        ("S2 target R_t", 1.0, "S2_target", "float", None),
+        ("S2 target R_t", 0.9, "S2_target", "float", None),
         ("S2 days to target", 90, "S2_days", "int", None),
         ("S3 target R_t", 0.6, "S3_target", "float", None),
         ("S3 days to target", 30, "S3_days", "int", None),
@@ -3407,8 +3407,8 @@ if st.session_state["step"] == "forecast":
         )
 
         scen_defaults = {
-            "S1": {"label": "Delayed response", "target": 1.0, "days": 180},
-            "S2": {"label": "Moderate response", "target": 1.0, "days": 90},
+            "S1": {"label": "Delayed response", "target": 0.9, "days": 180},
+            "S2": {"label": "Moderate response", "target": 0.9, "days": 90},
             "S3": {"label": "Strong combined", "target": 0.6, "days": 30},
         }
         scen_inputs = {}
