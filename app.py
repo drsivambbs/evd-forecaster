@@ -899,7 +899,7 @@ with hdr_l:
     scenario_name = st.text_input(
         "Scenario / outbreak label",
         value=st.session_state.get("scenario_name",
-                                   "DRC + Uganda EVD — May 2026"),
+                                   "DRC EVD — May 2026"),
         help="Stamped onto chart titles and CSV filenames so you can keep runs apart.",
         key="scenario_name",
     )
@@ -1279,6 +1279,61 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
             .rolling(window=w, min_periods=1).mean())
     out.attrs["smooth_window"] = w
     return out
+
+
+def chart_with_line_filter(fig: go.Figure, key: str,
+                           label: str = "Show / hide lines") -> None:
+    """Render a Plotly figure preceded by a popover of checkboxes — one per
+    legend line — so the user can display only the series they care about.
+
+    Lines are matched by ``legendgroup`` (falling back to the trace ``name``),
+    so companion traces such as confidence-interval bands and baseline markers
+    toggle together with the line they belong to. Deselected lines are set to
+    ``visible="legendonly"`` (hidden from the plot but still re-enableable via
+    the Plotly legend). Because the figure object is mutated in place, any PNG
+    export of the same object reflects the current selection.
+    """
+    # Collect selectable legend entries, in order of first appearance.
+    entries: list[str] = []        # unique display names, ordered
+    group_to_name: dict[str, str] = {}   # legendgroup -> display name
+    for tr in fig.data:
+        nm = getattr(tr, "name", None)
+        if nm and getattr(tr, "showlegend", None) is not False:
+            if nm not in entries:
+                entries.append(nm)
+            grp = getattr(tr, "legendgroup", None)
+            if grp:
+                group_to_name[grp] = nm
+
+    # Nothing to filter (0 or 1 line) — just draw the chart.
+    if len(entries) <= 1:
+        st.plotly_chart(fig, use_container_width=True, key=key)
+        return
+
+    def _slug(s: str) -> str:
+        return "".join(ch if ch.isalnum() else "_" for ch in s)
+
+    selected: set[str] = set()
+    with st.popover(f"☰ {label}", use_container_width=False):
+        b_all, b_none = st.columns(2)
+        if b_all.button("All", key=f"{key}_all", use_container_width=True):
+            for e in entries:
+                st.session_state[f"{key}_cb_{_slug(e)}"] = True
+        if b_none.button("None", key=f"{key}_none", use_container_width=True):
+            for e in entries:
+                st.session_state[f"{key}_cb_{_slug(e)}"] = False
+        for e in entries:
+            if st.checkbox(e, value=True, key=f"{key}_cb_{_slug(e)}"):
+                selected.add(e)
+
+    # Apply the selection to every trace (lines + their companion traces).
+    for tr in fig.data:
+        grp = getattr(tr, "legendgroup", None)
+        owner = group_to_name.get(grp, getattr(tr, "name", None))
+        if owner in entries:
+            tr.visible = True if owner in selected else "legendonly"
+
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
 def daily_chart(series: pd.DataFrame) -> go.Figure:
@@ -2959,7 +3014,7 @@ if st.session_state["step"] == "eoo":
         else:
             _fig_eoo = eoo_chart_multi(days_range, eoo_probs, valid_plc_used, thr)
             st.session_state["chart_eoo"] = _fig_eoo
-            st.plotly_chart(_fig_eoo, use_container_width=True)
+            chart_with_line_filter(_fig_eoo, key="eoo")
 
             # --- Per-scenario key dates summary ---
             cross_idx = np.where(eoo_probs >= thr)[0]
@@ -3492,7 +3547,7 @@ if st.session_state["step"] == "forecast":
                 mode=("daily" if mode_view == "Daily" else "cumulative"),
             )
             st.session_state["chart_forecast"] = _fig_forecast
-            st.plotly_chart(_fig_forecast, use_container_width=True)
+            chart_with_line_filter(_fig_forecast, key="forecast")
 
             # --- Summary cards: 180-day totals per scenario ---
             st.markdown(
@@ -3859,7 +3914,7 @@ if st.session_state["step"] == "rt":
         else:
             _fig_rt = rt_combined_chart(series_in, rt_df, rt_si)
             st.session_state["chart_rt"] = _fig_rt
-            st.plotly_chart(_fig_rt, use_container_width=True)
+            chart_with_line_filter(_fig_rt, key="rt")
 
             primary = rt_df[rt_df["si_mean_used"] == rt_si].dropna(
                 subset=["rt_mean"]).copy()
@@ -4488,11 +4543,11 @@ with right:
         with tab1:
             _fig_daily = daily_chart(series)
             st.session_state["chart_daily"] = _fig_daily
-            st.plotly_chart(_fig_daily, use_container_width=True)
+            chart_with_line_filter(_fig_daily, key="daily")
         with tab2:
             _fig_cum = cumulative_chart(series, chart_snaps)
             st.session_state["chart_cumulative"] = _fig_cum
-            st.plotly_chart(_fig_cum, use_container_width=True)
+            chart_with_line_filter(_fig_cum, key="cum")
         with tab3:
             smooth_raw_cols = [c for c in
                                ["new_confirmed_raw", "new_suspected_raw",
