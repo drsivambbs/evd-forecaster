@@ -42,6 +42,25 @@ def _try_fig_to_png(fig, width: int = 1100, height: int = 480):
         return None
 
 
+def _export_fig(fig):
+    """Return a copy of an in-app (legend-less) figure with the Plotly legend
+    restored, for embedding in the Excel report. The on-screen charts use the
+    checkbox legend and set showlegend=False; the standalone report still needs
+    a visible legend, so re-enable it on a copy without touching the original."""
+    if fig is None:
+        return None
+    try:
+        f = go.Figure(fig)
+        f.update_layout(
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.18,
+                        xanchor="center", x=0.5, font=dict(size=11)),
+            margin=dict(b=120))
+        return f
+    except Exception:
+        return fig
+
+
 def _apply_header_style(ws, row: int, cols: int, fill: str, font_color: str = "FFFFFF"):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     fill_obj = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
@@ -401,7 +420,7 @@ def build_excel_report() -> bytes:
         # Embed daily-new chart (read directly from session_state)
         _fig_daily = ss.get("chart_daily")
         if _fig_daily is not None:
-            _embed_png(ws, _try_fig_to_png(_fig_daily), "A4")
+            _embed_png(ws, _try_fig_to_png(_export_fig(_fig_daily)), "A4")
 
         row_data_start = 30
         ws.cell(row=row_data_start - 1, column=1,
@@ -447,7 +466,8 @@ def build_excel_report() -> bytes:
         # Embed R_t chart (from session_state — set when Step 2 rendered)
         _fig_rt = ss.get("chart_rt")
         if _fig_rt is not None:
-            _embed_png(ws, _try_fig_to_png(_fig_rt, width=1100, height=520),
+            _embed_png(ws, _try_fig_to_png(_export_fig(_fig_rt), width=1100,
+                                           height=520),
                         "A4")
 
         # Headline R_t banner
@@ -511,7 +531,8 @@ def build_excel_report() -> bytes:
                           "S3": {"label": "Strong response"}}
         _fig_forecast = ss.get("chart_forecast")
         if _fig_forecast is not None:
-            _embed_png(ws, _try_fig_to_png(_fig_forecast, width=1200,
+            _embed_png(ws, _try_fig_to_png(_export_fig(_fig_forecast),
+                                           width=1200,
                                             height=520), "A4")
 
         # Per-scenario headline metrics
@@ -620,7 +641,8 @@ def build_excel_report() -> bytes:
         thr = ss.get("eoo_threshold", 0.95)
         _fig_eoo = ss.get("chart_eoo")
         if _fig_eoo is not None:
-            _embed_png(ws, _try_fig_to_png(_fig_eoo, width=1200, height=520),
+            _embed_png(ws, _try_fig_to_png(_export_fig(_fig_eoo), width=1200,
+                                           height=520),
                         "A4")
 
         # Per-scenario declaration dates
@@ -868,10 +890,7 @@ st.markdown(
       div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has(.freeze-right) {
         position: sticky;
         top: 0.75rem;
-        align-self: flex-start;
-        max-height: calc(100vh - 1.5rem);
-        overflow-y: auto;
-        overflow-x: hidden;
+        align-self: flex-start;   /* height follows the content, then pins */
       }
       /* Compact checkbox legend below the Step-1 daily chart. Streamlit adds a
          .st-key-<key> class to each keyed widget's container, so these rules
@@ -888,10 +907,9 @@ st.markdown(
       }
       /* Compact labels; no negative margins (those made a wrapped 2-line label
          collide with the next row, and a flush title collide with row one). */
-      [class*="st-key-d1_show_"] p,
-      [class*="st-key-c1_show_"] p { font-size: 0.72rem; line-height: 1.25; }
-      [class*="st-key-d1_show_"] label,
-      [class*="st-key-c1_show_"] label { align-items: flex-start; }
+      /* All step legends share the *_show_* key convention (d1_/c1_/rt_/fc_/eoo_). */
+      [class*="st-key-"][class*="_show_"] p { font-size: 0.72rem; line-height: 1.25; }
+      [class*="st-key-"][class*="_show_"] label { align-items: flex-start; }
       /* trim Plotly's bottom whitespace so the legend sits right under it */
       div[data-testid="stPlotlyChart"] { margin-bottom: -0.4rem; }
       /* Tighten vertical spacing inside the frozen output panel so the chart
@@ -1755,30 +1773,78 @@ def compute_rt_table(daily: pd.DataFrame, si_mean: float, si_sd: float,
     return pd.DataFrame(rows)
 
 
+# =========================================================================
+# Generic checkbox legend (shared by Steps 2/3/4 output charts)
+# -------------------------------------------------------------------------
+# `groups`    : list of (container_title, [(label, swatch), ...])
+# `available` : dict label -> bool (False => disabled checkbox)
+# `default_on`: set of labels ticked by default
+# Each chart reads the checked set with legend_checked(...) BEFORE drawing,
+# then render_legend(...) draws the compact checkboxes BELOW the chart.
+# =========================================================================
+def legend_checked(groups, key_prefix: str, default_on, available) -> set:
+    """Checked + available labels, read from session_state without creating
+    widgets (so the chart can be drawn above the checkboxes)."""
+    checked = set()
+    for _title, items in groups:
+        for label, _swatch in items:
+            if not available.get(label, True):
+                continue
+            if st.session_state.get(key_prefix + _slug(label),
+                                    label in default_on):
+                checked.add(label)
+    return checked
+
+
+def render_legend(groups, key_prefix: str, default_on, available) -> None:
+    """Compact 3-container checkbox legend rendered below a chart."""
+    st.markdown('<div class="mini-legend-label">Legend — tick to show</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(len(groups))
+    for (title, items), col in zip(groups, cols):
+        with col:
+            st.markdown(f'<div class="mini-legend-group">{title}</div>',
+                        unsafe_allow_html=True)
+            for label, swatch in items:
+                avail = available.get(label, True)
+                st.checkbox(
+                    f"{swatch} {label}",
+                    value=avail and label in default_on,
+                    key=key_prefix + _slug(label),
+                    disabled=not avail,
+                    help=None if avail else
+                    "Not available for the current inputs.")
+
+
 def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
-                      si_mean: float) -> go.Figure:
-    """R_t trajectory with 95% CrI band, optional sensitivity overlay, R_t=1 line."""
+                      si_mean: float, selected=None) -> go.Figure:
+    """R_t trajectory with 95% CrI band, optional sensitivity overlay, R_t=1 line.
+    `selected` (set of labels) gates which series are drawn; None = draw all."""
+    def show(lbl):
+        return selected is None or lbl in selected
     fig = go.Figure()
     primary = rt_df[rt_df["si_mean_used"] == si_mean].copy()
     primary["date"] = pd.to_datetime(primary["date"])
 
-    fig.add_trace(go.Scatter(
-        x=pd.concat([primary["date"], primary["date"][::-1]]),
-        y=pd.concat([primary["rt_upper"], primary["rt_lower"][::-1]]),
-        fill="toself", fillcolor="rgba(178,34,34,0.18)",
-        line=dict(color="rgba(0,0,0,0)"), name="95% CrI",
-        hoverinfo="skip", showlegend=True,
-    ))
-    fig.add_trace(go.Scatter(
-        x=primary["date"], y=primary["rt_mean"],
-        mode="lines+markers", name="R_t mean",
-        line=dict(color="#8B0000", width=2.4),
-        marker=dict(size=6, color="#8B0000"),
-        hovertemplate="%{x|%d %b %Y}<br>R_t: %{y:.2f}<extra></extra>",
-    ))
+    if show("95% CrI"):
+        fig.add_trace(go.Scatter(
+            x=pd.concat([primary["date"], primary["date"][::-1]]),
+            y=pd.concat([primary["rt_upper"], primary["rt_lower"][::-1]]),
+            fill="toself", fillcolor="rgba(178,34,34,0.18)",
+            line=dict(color="rgba(0,0,0,0)"), name="95% CrI",
+            hoverinfo="skip", showlegend=False,
+        ))
+    if show("R_t mean"):
+        fig.add_trace(go.Scatter(
+            x=primary["date"], y=primary["rt_mean"],
+            mode="lines+markers", name="R_t mean",
+            line=dict(color="#8B0000", width=2.4),
+            marker=dict(size=6, color="#8B0000"),
+            hovertemplate="%{x|%d %b %Y}<br>R_t: %{y:.2f}<extra></extra>",
+        ))
 
     sens_subset = rt_df[rt_df["si_mean_used"] != si_mean]
-    if len(sens_subset) > 0:
+    if len(sens_subset) > 0 and show("Sensitivity"):
         sens_mean = sens_subset["si_mean_used"].iloc[0]
         sens_subset = sens_subset.copy()
         sens_subset["date"] = pd.to_datetime(sens_subset["date"])
@@ -1791,7 +1857,7 @@ def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
             hovertemplate="%{x|%d %b %Y}<br>R_t: %{y:.2f}<extra></extra>",
         ))
 
-    if len(primary) > 0:
+    if len(primary) > 0 and show("R_t = 1"):
         fig.add_trace(go.Scatter(
             x=[primary["date"].min(), primary["date"].max()],
             y=[1, 1], mode="lines",
@@ -1804,10 +1870,9 @@ def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
                    font=dict(size=15, color="#1f4e79"), x=0.01),
         xaxis_title="Date", yaxis_title="Instantaneous R_t",
         template="simple_white", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="top", y=-0.20,
-                    xanchor="center", x=0.5, font=dict(size=11)),
-        margin=dict(l=60, r=20, t=50, b=95),
-        height=480,
+        showlegend=False,
+        margin=dict(l=60, r=20, t=46, b=24),
+        height=360,
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
@@ -2050,7 +2115,7 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
 def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                    labels: dict, y_log: bool = True,
                    mode: str = "cumulative",
-                   independent_y: bool = False) -> go.Figure:
+                   independent_y: bool = False, selected=None) -> go.Figure:
     """One panel per response scenario, each showing 3 series (confirmed /
     suspected / deaths). mode='cumulative' (default) plots cumulative counts
     with the observed baseline as a dotted reference; mode='daily' plots
@@ -2095,12 +2160,17 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                     metric_value.get("upper"))
         return metric_value, None, None
 
+    def _sel(lbl):
+        return selected is None or lbl in selected
+
     for col_idx, s_name in enumerate(panel_order, start=1):
         s_data = scenarios[s_name]
         for col_key, label, colour, band_colour, baseline_key in metric_map:
+            if not _sel(baseline_key.capitalize()):
+                continue
             median, lower, upper = _split(s_data[col_key])
             # 90% PI band if available
-            if lower is not None and upper is not None:
+            if lower is not None and upper is not None and _sel("90% PI band"):
                 fig.add_trace(go.Scatter(
                     x=list(horizon_dates) + list(horizon_dates[::-1]),
                     y=list(upper) + list(lower[::-1]),
@@ -2115,12 +2185,15 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
                 name=label,
                 line=dict(color=colour, width=2.2),
                 legendgroup=label,
+                # In-app the legend is suppressed at layout level (checkbox
+                # legend is used); kept True on panel 1 so the Excel export
+                # (which re-enables the layout legend) still lists each series.
                 showlegend=(col_idx == 1),
                 hovertemplate=(f"<b>{label}</b><br>"
                                "%{x|%d %b %Y}<br>%{y:,.0f}<extra></extra>"),
             ), row=1, col=col_idx)
             # Observed baseline marker (dotted horizontal) — only for cumulative
-            if not is_daily:
+            if not is_daily and _sel("Baseline"):
                 fig.add_trace(go.Scatter(
                     x=[horizon_dates[0], horizon_dates[-1]],
                     y=[baselines[baseline_key], baselines[baseline_key]],
@@ -2149,11 +2222,9 @@ def forecast_chart(scenarios: dict, horizon_dates, baselines: dict,
 
     fig.update_layout(
         template="simple_white",
-        height=560,
-        margin=dict(l=60, r=20, t=140, b=95),
-        legend=dict(orientation="h", yanchor="top", y=-0.18,
-                    xanchor="center", x=0.5, font=dict(size=11),
-                    bgcolor="rgba(255,255,255,0.7)"),
+        height=430,
+        margin=dict(l=60, r=20, t=120, b=30),
+        showlegend=False,
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
         hovermode="x unified",
@@ -2261,7 +2332,7 @@ RESPONSE_LABELS = {
 
 
 def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
-                    threshold: float = 0.95) -> go.Figure:
+                    threshold: float = 0.95, selected=None) -> go.Figure:
     """Plot EOO probability for all valid scenarios on a calendar-date x-axis.
 
     Each scenario's curve is the same shape (function of days after its
@@ -2272,11 +2343,16 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
     if not scenarios_plc:
         return fig
 
+    def _sel(lbl):
+        return selected is None or lbl in selected
+
     all_dates = []
     for name, plc in scenarios_plc.items():
         dates = [plc + pd.Timedelta(days=int(d)) for d in days_range]
-        all_dates.extend(dates)
+        all_dates.extend(dates)  # keep axis range stable across toggles
         label = RESPONSE_LABELS.get(name, name)
+        if not _sel(label):
+            continue
         fig.add_trace(go.Scatter(
             x=dates, y=eoo_probs, mode="lines",
             name=f"{label} — last case {plc.strftime('%d %b %Y')}",
@@ -2287,19 +2363,22 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
             ),
         ))
 
+    if not all_dates:
+        return fig
     # Horizontal declaration-threshold line
     x_min, x_max = min(all_dates), max(all_dates)
-    fig.add_shape(type="line", xref="x", yref="y",
-                  x0=x_min, x1=x_max, y0=threshold, y1=threshold,
-                  line=dict(color="#7a7a7a", dash="dot", width=1.4))
-    fig.add_annotation(
-        xref="paper", yref="y",
-        x=0.995, y=threshold, showarrow=False,
-        text=f"<b>{int(threshold * 100)}% declaration threshold</b>",
-        font=dict(size=10, color="#444"),
-        bgcolor="rgba(255,255,255,0.85)",
-        xanchor="right", yanchor="bottom",
-    )
+    if _sel("Declaration threshold"):
+        fig.add_shape(type="line", xref="x", yref="y",
+                      x0=x_min, x1=x_max, y0=threshold, y1=threshold,
+                      line=dict(color="#7a7a7a", dash="dot", width=1.4))
+        fig.add_annotation(
+            xref="paper", yref="y",
+            x=0.995, y=threshold, showarrow=False,
+            text=f"<b>{int(threshold * 100)}% declaration threshold</b>",
+            font=dict(size=10, color="#444"),
+            bgcolor="rgba(255,255,255,0.85)",
+            xanchor="right", yanchor="bottom",
+        )
 
     fig.update_layout(
         title=dict(text="<b>End-of-outbreak probability</b> — per response scenario",
@@ -2307,11 +2386,9 @@ def eoo_chart_multi(days_range, eoo_probs, scenarios_plc: dict,
         xaxis_title="Calendar date",
         yaxis_title="P(outbreak extinct)",
         template="simple_white", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="top", y=-0.20,
-                    xanchor="center", x=0.5, font=dict(size=11),
-                    bgcolor="rgba(255,255,255,0.7)"),
-        margin=dict(l=60, r=30, t=60, b=95),
-        height=460, plot_bgcolor="white",
+        showlegend=False,
+        margin=dict(l=60, r=30, t=54, b=24),
+        height=360, plot_bgcolor="white",
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         yaxis=dict(range=[0, 1.05]),
     )
@@ -3115,9 +3192,24 @@ if st.session_state["step"] == "eoo":
                 unsafe_allow_html=True,
             )
         else:
-            _fig_eoo = eoo_chart_multi(days_range, eoo_probs, valid_plc_used, thr)
+            _eoo_swatch = {"S1": "🔴", "S2": "🟠", "S3": "🟢"}
+            _eoo_scen_items = [(RESPONSE_LABELS.get(s, s),
+                                _eoo_swatch.get(s, "⚫"))
+                               for s in valid_plc_used]
+            _eoo_groups = [
+                ("Scenarios", _eoo_scen_items),
+                ("Reference", [("Declaration threshold", "┈")]),
+            ]
+            _eoo_avail = {lbl: True for lbl, _ in _eoo_scen_items}
+            _eoo_avail["Declaration threshold"] = True
+            _eoo_default = set(_eoo_avail.keys())
+            _eoo_sel = legend_checked(_eoo_groups, "eoo_show_",
+                                      _eoo_default, _eoo_avail)
+            _fig_eoo = eoo_chart_multi(days_range, eoo_probs, valid_plc_used,
+                                       thr, selected=_eoo_sel)
             st.session_state["chart_eoo"] = _fig_eoo
-            chart_with_line_filter(_fig_eoo, key="eoo")
+            st.plotly_chart(_fig_eoo, use_container_width=True, key="eoo")
+            render_legend(_eoo_groups, "eoo_show_", _eoo_default, _eoo_avail)
 
             # --- Per-scenario key dates summary ---
             cross_idx = np.where(eoo_probs >= thr)[0]
@@ -3766,14 +3858,32 @@ if st.session_state["step"] == "forecast":
                     f"shaded band = 90% posterior predictive interval "
                     f"from {st.session_state.get('fc_n_samples', '?')} R_t draws."
                 )
+            _fc_is_cumulative = (mode_view != "Daily")
+            _fc_has_band = any(isinstance(v, dict)
+                               for s in scenarios_out.values()
+                               for v in s.values())
+            _fc_groups = [
+                ("Series", [("Confirmed", "🔵"), ("Suspected", "🟠"),
+                            ("Deaths", "🔴")]),
+                ("Overlays", [("90% PI band", "▦"), ("Baseline", "┈")]),
+            ]
+            _fc_avail = {"Confirmed": True, "Suspected": True, "Deaths": True,
+                         "90% PI band": _fc_has_band,
+                         "Baseline": _fc_is_cumulative}
+            _fc_default = {"Confirmed", "Suspected", "Deaths",
+                           "90% PI band", "Baseline"}
+            _fc_sel = legend_checked(_fc_groups, "fc_show_",
+                                     _fc_default, _fc_avail)
             _fig_forecast = forecast_chart(
                 scenarios_out, horizon_dates, baselines, scen_labels,
                 y_log=bool(y_log),
                 mode=("daily" if mode_view == "Daily" else "cumulative"),
-                independent_y=bool(independent_y),
+                independent_y=bool(independent_y), selected=_fc_sel,
             )
             st.session_state["chart_forecast"] = _fig_forecast
-            chart_with_line_filter(_fig_forecast, key="forecast")
+            st.plotly_chart(_fig_forecast, use_container_width=True,
+                            key="forecast")
+            render_legend(_fc_groups, "fc_show_", _fc_default, _fc_avail)
 
             # --- Summary cards: 180-day totals per scenario ---
             st.markdown(
@@ -4151,9 +4261,20 @@ if st.session_state["step"] == "rt":
                 unsafe_allow_html=True,
             )
         else:
-            _fig_rt = rt_combined_chart(series_in, rt_df, rt_si)
+            _rt_has_sens = not rt_df[rt_df["si_mean_used"] != rt_si].empty
+            _rt_groups = [
+                ("Estimate", [("R_t mean", "🔴"), ("95% CrI", "🟥")]),
+                ("Reference", [("Sensitivity", "🟢"), ("R_t = 1", "┈")]),
+            ]
+            _rt_avail = {"R_t mean": True, "95% CrI": True,
+                         "Sensitivity": _rt_has_sens, "R_t = 1": True}
+            _rt_default = {"R_t mean", "95% CrI", "Sensitivity", "R_t = 1"}
+            _rt_sel = legend_checked(_rt_groups, "rt_show_",
+                                     _rt_default, _rt_avail)
+            _fig_rt = rt_combined_chart(series_in, rt_df, rt_si, _rt_sel)
             st.session_state["chart_rt"] = _fig_rt
-            chart_with_line_filter(_fig_rt, key="rt")
+            st.plotly_chart(_fig_rt, use_container_width=True, key="rt")
+            render_legend(_rt_groups, "rt_show_", _rt_default, _rt_avail)
 
             primary = rt_df[rt_df["si_mean_used"] == rt_si].dropna(
                 subset=["rt_mean"]).copy()
