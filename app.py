@@ -508,7 +508,7 @@ def build_excel_report() -> bytes:
         # Embed forecast chart (from session_state)
         scen_defaults = {"S1": {"label": "Delayed response"},
                           "S2": {"label": "Moderate response"},
-                          "S3": {"label": "Strong combined"}}
+                          "S3": {"label": "Strong response"}}
         _fig_forecast = ss.get("chart_forecast")
         if _fig_forecast is not None:
             _embed_png(ws, _try_fig_to_png(_fig_forecast, width=1200,
@@ -643,7 +643,7 @@ def build_excel_report() -> bytes:
         cross = np.where(eoo_probs >= thr)[0]
         cross_day = int(eoo_days[cross[0]]) if len(cross) > 0 else None
         scen_lbl = {"S1": "Delayed response", "S2": "Moderate response",
-                     "S3": "Strong combined"}
+                     "S3": "Strong response"}
         for s_name, plc in valid_plc.items():
             cross_date = ((plc + pd.Timedelta(days=cross_day)).strftime("%d %b %Y")
                            if cross_day is not None else "not reached")
@@ -1028,7 +1028,7 @@ INPUT_STATE_KEYS = [
     "S1_target", "S1_days", "S2_target", "S2_days", "S3_target", "S3_days",
     "eoo_n_sim", "eoo_max_days", "eoo_threshold", "eoo_k_disp",
     "fc_y_log", "fc_independent_y", "fc_cfr", "result_series",
-    "result_chart_snaps", "rt_df",
+    "result_chart_snaps", "result_interpolated", "rt_df",
     "rt_si_mean", "rt_si_sd", "fc_scenarios", "fc_dates", "fc_baselines",
     "fc_scen_inputs", "fc_rt_start", "fc_n_samples",
     "fc_preview_traj", "fc_preview_dates",
@@ -1436,7 +1436,8 @@ def render_daily_legend(series: pd.DataFrame) -> None:
                     "estimate / smoothing option on the left, then regenerate.")
 
 
-def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
+def daily_chart(series: pd.DataFrame, selected: list,
+                interpolated: bool = True) -> go.Figure:
     """Daily-incidence chart driven by the checkbox legend. `selected` is the
     list returned by render_daily_legend — only those traces are drawn, and the
     built-in Plotly legend is suppressed in favour of the checkboxes."""
@@ -1450,7 +1451,8 @@ def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
             + ": %{y:.1f}<extra></extra>",
         ))
     fig.update_layout(
-        title=dict(text="Daily new cases (interpolated)",
+        title=dict(text="Daily new cases" + (" (interpolated)"
+                                             if interpolated else ""),
                    font=dict(size=15, color="#1f4e79"), x=0.01),
         xaxis_title="Date", yaxis_title="New cases per day",
         template="simple_white", hovermode="x unified",
@@ -1558,7 +1560,7 @@ def render_cum_legend(series: pd.DataFrame, snaps) -> None:
 
 
 def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None,
-                     selected: list) -> go.Figure:
+                     selected: list, interpolated: bool = True) -> go.Figure:
     """Cumulative chart driven by the checkbox legend. Only `selected` traces
     are drawn; the built-in Plotly legend is suppressed."""
     fig = go.Figure()
@@ -1599,7 +1601,8 @@ def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None,
             ))
 
     fig.update_layout(
-        title=dict(text="Cumulative cases (interpolated)",
+        title=dict(text="Cumulative cases" + (" (interpolated)"
+                                              if interpolated else ""),
                    font=dict(size=15, color="#1f4e79"), x=0.01),
         xaxis_title="Date", yaxis_title="Cumulative count",
         template="simple_white", hovermode="x unified",
@@ -1854,8 +1857,8 @@ def run_scenario_uncertain(seed_conf, seed_susp, rt_start_samples,
     """Run the renewal forecast for N R_t-start samples; return median + 90% PI bands.
 
     rt_start_samples : 1-D array of starting R_t values sampled from the Cori
-    Gamma posterior. Each becomes a linearly-declining trajectory to `target`
-    over `days_to_target` days, then plateaus.
+    Gamma posterior. Each becomes a linear trajectory to `target`
+    over `days_to_target` days, then holds.
 
     Vectorised across the R_t samples (and the per-day serial-interval
     convolution) for speed; numerically identical to projecting each sample
@@ -1944,7 +1947,7 @@ def rt_preview_chart(traj_dict: dict, dates) -> go.Figure:
     SCENARIO_LABELS = {
         "S1": "S1 — Delayed",
         "S2": "S2 — Moderate",
-        "S3": "S3 — Strong combined",
+        "S3": "S3 — Strong",
     }
 
     # Determine y-axis range so shaded zones fit cleanly
@@ -2253,7 +2256,7 @@ def compute_eoo_curve(rt_shape_post: float, rt_rate_post: float,
 RESPONSE_LABELS = {
     "S1": "Delayed response",
     "S2": "Moderate response",
-    "S3": "Strong combined response",
+    "S3": "Strong response",
 }
 
 
@@ -2850,10 +2853,10 @@ if st.session_state["step"] == "help":
     )
     gentry(
         "R<sub>t</sub> scenario — target & days to target",
-        "S1: 1.0/180d · S2: 1.0/90d · S3: 0.6/30d",
+        "S1: 0.9/180d · S2: 0.9/90d · S3: 0.6/30d",
         "Each scenario defines a linear R<sub>t</sub> trajectory: starts at the user-"
-        "selected R<sub>t</sub>, declines linearly to <code>target</code> over "
-        "<code>days_to_target</code> days, then plateaus. Represents an assumption "
+        "selected R<sub>t</sub>, moves linearly to <code>target</code> over "
+        "<code>days_to_target</code> days, then holds. Represents an assumption "
         "about response speed; not a prediction.",
         "Each scenario asks: \"What if the response brings R<sub>t</sub> down to "
         "<b>X</b> over <b>Y</b> days?\" Faster, deeper control = smaller outbreak.",
@@ -3557,14 +3560,14 @@ if st.session_state["step"] == "forecast":
         )
         st.caption(
             f"All scenarios start from R_t = {rt_starting:.2f} (your selected "
-            f"value from Step 2) and decline linearly to the target over the "
-            f"given days, then plateau."
+            f"value from Step 2) and move linearly to the target over the "
+            f"given days, then hold."
         )
 
         scen_defaults = {
             "S1": {"label": "Delayed response", "target": 0.9, "days": 180},
             "S2": {"label": "Moderate response", "target": 0.9, "days": 90},
-            "S3": {"label": "Strong combined", "target": 0.6, "days": 30},
+            "S3": {"label": "Strong response", "target": 0.6, "days": 30},
         }
         scen_inputs = {}
         for name, d in scen_defaults.items():
@@ -3917,7 +3920,7 @@ if st.session_state["step"] == "forecast":
         )
         st.caption(
             "Each scenario (S1/S2/S3) starts from the R_t selected in Step 2 "
-            "and declines linearly to its target over D days, then plateaus."
+            "and moves linearly to its target over D days, then holds."
         )
 
         st.markdown("**Step 3 — Deaths from confirmed cases with lag:**")
@@ -4643,6 +4646,8 @@ with left:
                                           whole_table_source)
                     built_series = interpolate_from_cumulative(snaps)
                     st.session_state["result_chart_snaps"] = snaps
+                    # Snapshot mode always interpolates between cumulative points.
+                    st.session_state["result_interpolated"] = True
             else:
                 inc = attach_source(incidence_df.copy(), source_mode,
                                     whole_table_source)
@@ -4653,6 +4658,11 @@ with left:
                 inc_sorted = _parse_date_column_strict(
                     inc, "date", where="the incidence file")
                 inc_sorted = inc_sorted.sort_values("date")
+                # Daily-spaced incidence is used as-is; only gappy incidence is
+                # linearly filled by expand_incidence. Flag the title accordingly.
+                _gaps = inc_sorted["date"].diff().dt.days.dropna()
+                st.session_state["result_interpolated"] = (
+                    len(inc_sorted) > 1 and not bool((_gaps == 1).all()))
                 chart_snaps = inc_sorted.assign(
                     cumulative_confirmed=inc_sorted["new_confirmed"].cumsum(),
                     cumulative_suspected=inc_sorted["new_suspected"].cumsum(),
@@ -4779,13 +4789,16 @@ with right:
         tab1, tab2, tab3 = st.tabs(["Daily new", "Cumulative", "Table"])
         with tab1:
             _daily_selected = daily_selected_from_state(series)
-            _fig_daily = daily_chart(series, _daily_selected)
+            _interp = st.session_state.get("result_interpolated", True)
+            _fig_daily = daily_chart(series, _daily_selected, _interp)
             st.session_state["chart_daily"] = _fig_daily
             st.plotly_chart(_fig_daily, use_container_width=True, key="daily")
             render_daily_legend(series)
         with tab2:
             _cum_selected = cum_selected_from_state(series, chart_snaps)
-            _fig_cum = cumulative_chart(series, chart_snaps, _cum_selected)
+            _interp = st.session_state.get("result_interpolated", True)
+            _fig_cum = cumulative_chart(series, chart_snaps, _cum_selected,
+                                        _interp)
             st.session_state["chart_cumulative"] = _fig_cum
             st.plotly_chart(_fig_cum, use_container_width=True, key="cum")
             render_cum_legend(series, chart_snaps)
