@@ -986,8 +986,8 @@ with hdr_r:
 # IMPORTANT: build the report only when the user clicks — building it on every
 # rerun re-ran the (slow, kaleido-based) chart image export on every widget
 # interaction, which froze the app once charts existed in session_state.
-ex_l, ex_m, ex_r = st.columns([2.6, 1, 1])
-with ex_m:
+ex_l, ex_r = st.columns([3.4, 1])
+with ex_r:
     if st.button("Generate Excel report", use_container_width=True,
                  key="excel_build",
                  help="Builds a single .xlsx with Dashboard, Inputs, Daily "
@@ -1010,39 +1010,6 @@ with ex_m:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key="excel_export",
-        )
-with ex_r:
-    # PowerPoint report — one slide per step (inputs table | chart |
-    # interpretation), plus title, executive-summary and references slides.
-    # Charts are drawn with matplotlib in report_export.py, so this export does
-    # NOT depend on the (currently hanging) kaleido/plotly image path.
-    if st.button("Generate PPT report", use_container_width=True,
-                 key="ppt_build",
-                 help="Builds a polished .pptx — title slide, executive "
-                      "summary, one slide per step (inputs + chart + "
-                      "interpretation), and a methods/references slide."):
-        try:
-            with st.spinner("Building PowerPoint…"):
-                import report_export
-                st.session_state["_ppt_bytes"] = report_export.build_pptx(
-                    st.session_state,
-                    st.session_state.get("scenario_name",
-                                         "EVD Forecaster run"))
-        except Exception as e:
-            st.session_state.pop("_ppt_bytes", None)
-            st.caption(f"PPT export unavailable: {e}")
-    if st.session_state.get("_ppt_bytes"):
-        slug = _slug(st.session_state.get("scenario_name", ""))
-        pname = (f"{slug}__evd_forecaster__"
-                 f"{datetime.now().strftime('%Y%m%d_%H%M')}.pptx")
-        st.download_button(
-            "Download PPT report",
-            data=st.session_state["_ppt_bytes"],
-            file_name=pname,
-            mime="application/vnd.openxmlformats-officedocument."
-                 "presentationml.presentation",
-            use_container_width=True,
-            key="ppt_export",
         )
 
 
