@@ -885,10 +885,17 @@ st.markdown(
         text-transform: uppercase; letter-spacing: 0.04em;
         margin-bottom: 0.0rem;
       }
-      [class*="st-key-d1_show_"] { margin-bottom: -0.7rem; }
+      [class*="st-key-d1_show_"] { margin-bottom: -0.45rem; }
       [class*="st-key-d1_show_"] p { font-size: 0.7rem; line-height: 1.1; }
       /* trim Plotly's bottom whitespace so the legend sits right under it */
       div[data-testid="stPlotlyChart"] { margin-bottom: -0.4rem; }
+      /* Tighten vertical spacing inside the frozen output panel so the chart
+         and the legend below it fit without internal scrolling. Scoped to the
+         right (output) column via the .freeze-right anchor. */
+      div[data-testid="stColumn"]:has(.freeze-right) [data-testid="stVerticalBlock"],
+      div[data-testid="stColumn"]:has(.freeze-right) [data-testid="stVerticalBlockBorderWrapper"] {
+        gap: 0.55rem;
+      }
       div[data-testid="stRadio"] label p { font-size: 0.88rem; }
       div[data-testid="stCaptionContainer"] { color: var(--muted); }
       .stButton > button[kind="primary"] {
