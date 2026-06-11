@@ -885,8 +885,13 @@ st.markdown(
         text-transform: uppercase; letter-spacing: 0.04em;
         margin-bottom: 0.0rem;
       }
-      [class*="st-key-d1_show_"] { margin-bottom: -0.45rem; }
-      [class*="st-key-d1_show_"] p { font-size: 0.7rem; line-height: 1.1; }
+      /* Compact label; spacing comes from the reduced panel gap below — NO
+         negative margin here, otherwise a wrapped 2-line label overlaps the
+         next checkbox. */
+      [class*="st-key-d1_show_"] p,
+      [class*="st-key-c1_show_"] p { font-size: 0.7rem; line-height: 1.2; }
+      [class*="st-key-d1_show_"] label,
+      [class*="st-key-c1_show_"] label { align-items: flex-start; }
       /* trim Plotly's bottom whitespace so the legend sits right under it */
       div[data-testid="stPlotlyChart"] { margin-bottom: -0.4rem; }
       /* Tighten vertical spacing inside the frozen output panel so the chart
@@ -1465,75 +1470,152 @@ def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
     return fig
 
 
-def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None) -> go.Figure:
-    fig = go.Figure()
-    views = [
-        ("cumulative_confirmed", "Cumulative confirmed"),
-        ("cumulative_suspected", "Cumulative suspected"),
-        ("cumulative_deaths", "Cumulative deaths"),
-    ]
-    for col, label in views:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series[col],
-            mode="lines", name=f"{label} (interpolated)",
-            line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%d %b %Y}<br>" + label + ": %{y:.0f}<extra></extra>",
-        ))
-    if "cumulative_cfr_estimated" in series.columns:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series["cumulative_cfr_estimated"],
-            mode="lines", name="Estimated cumulative cases (CFR)",
-            line=dict(color="#6a1b9a", width=2.4),
-            hovertemplate="%{x|%d %b %Y}<br>CFR cumulative: %{y:.0f}<extra></extra>",
-        ))
-    if "cumulative_suspected_estimated" in series.columns:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series["cumulative_suspected_estimated"],
-            mode="lines", name="Estimated cumulative suspected",
-            line=dict(color="#b8860b", width=2.4, dash="dash"),
-            hovertemplate="%{x|%d %b %Y}<br>Est. suspected cumulative: "
-            "%{y:.0f}<extra></extra>",
-        ))
+# The Step-1 "Cumulative" chart mirrors the daily legend: three containers,
+# each with a colour-dot checkbox. "snapshot" entries come from the raw DON
+# snapshot table (snaps) and draw as dotted lines; "series" entries are the
+# interpolated / estimated columns from the built daily series.
+CUM_LEGEND_GROUPS = [
+    ("Suspected", [
+        ("Actual Suspected", "series", ["cumulative_suspected"],
+         "#FF8C00", "solid", 2.2),
+        ("Estimated Suspected", "series", ["cumulative_suspected_estimated"],
+         "#b8860b", "dash", 2.4),
+        ("Suspected (snapshots)", "snapshot", ["cumulative_suspected"],
+         "#FF8C00", "dot", 1.6),
+    ]),
+    ("Confirmed", [
+        ("Actual Confirmed", "series", ["cumulative_confirmed"],
+         "#4682B4", "solid", 2.2),
+        ("Estimated Confirmed", "series", ["cumulative_cfr_estimated"],
+         "#6a1b9a", "solid", 2.4),
+        ("Confirmed (snapshots)", "snapshot", ["cumulative_confirmed"],
+         "#4682B4", "dot", 1.6),
+    ]),
+    ("Death", [
+        ("Actual Death", "series", ["cumulative_deaths"],
+         "#B22222", "solid", 2.2),
+        ("Death (snapshots)", "snapshot", ["cumulative_deaths"],
+         "#B22222", "dot", 1.6),
+    ]),
+]
+CUM_LEGEND_DEFAULT_ON = {"Actual Suspected", "Actual Confirmed", "Actual Death"}
 
+
+def _cum_resolve(series: pd.DataFrame, snaps, kind: str, candidates):
+    """First available column for a cumulative legend item, or None.
+    snapshot items resolve against the snaps table; series items against the
+    built daily series."""
+    if kind == "snapshot":
+        if snaps is None or len(snaps) == 0:
+            return None
+        cols = snaps.columns
+    else:
+        cols = series.columns
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def cum_selected_from_state(series: pd.DataFrame, snaps) -> list:
+    """Resolve which cumulative traces to draw from the checkbox state in
+    session_state. Returns [(label, kind, column, colour, dash, width), ...]."""
+    selected = []
+    for _group, items in CUM_LEGEND_GROUPS:
+        for label, kind, candidates, colour, dash, width in items:
+            resolved = _cum_resolve(series, snaps, kind, candidates)
+            if resolved is None:
+                continue
+            key = "c1_show_" + _slug(label)
+            default = label in CUM_LEGEND_DEFAULT_ON
+            if st.session_state.get(key, default):
+                selected.append((label, kind, resolved, colour, dash, width))
+    return selected
+
+
+def render_cum_legend(series: pd.DataFrame, snaps) -> None:
+    """Compact 3-container checkbox legend for the cumulative chart, rendered
+    below it. Unavailable series show as disabled checkboxes."""
+    st.markdown('<div class="mini-legend-label">Legend — tick to show</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(len(CUM_LEGEND_GROUPS))
+    for (group_name, items), col in zip(CUM_LEGEND_GROUPS, cols):
+        with col:
+            st.markdown(f'<div class="mini-legend-group">{group_name}</div>',
+                        unsafe_allow_html=True)
+            for label, kind, candidates, colour, dash, width in items:
+                available = _cum_resolve(series, snaps, kind,
+                                         candidates) is not None
+                swatch = _DAILY_SWATCH.get(colour, "")
+                st.checkbox(
+                    f"{swatch} {label}",
+                    value=available and label in CUM_LEGEND_DEFAULT_ON,
+                    key="c1_show_" + _slug(label),
+                    disabled=not available,
+                    help=None if available else
+                    "Not available for the current inputs — enable the matching "
+                    "estimate option on the left, or add snapshot rows.")
+
+
+def cumulative_chart(series: pd.DataFrame, snaps: pd.DataFrame | None,
+                     selected: list) -> go.Figure:
+    """Cumulative chart driven by the checkbox legend. Only `selected` traces
+    are drawn; the built-in Plotly legend is suppressed."""
+    fig = go.Figure()
+    # Prepare the sorted snapshot table once (dates converted BEFORE sorting so
+    # string dates don't sort lexicographically into a wrong x-axis order).
+    snap_sorted = None
     if snaps is not None and len(snaps) > 0:
-        # IMPORTANT: convert dates BEFORE sorting. Sorting first treats
-        # string dates lexicographically (e.g. "10-Jan-2026" before
-        # "2-Feb-2026"), which produced an out-of-order x-axis on the
-        # Step 1 cumulative chart.
         snap_sorted = snaps.dropna(
             subset=["cumulative_confirmed", "cumulative_suspected",
-                    "cumulative_deaths"]
-        ).copy()
+                    "cumulative_deaths"]).copy()
         snap_sorted["date"] = pd.to_datetime(snap_sorted["date"])
         snap_sorted = snap_sorted.sort_values("date")
-        has_source = "source" in snap_sorted.columns
-        for col, label in views:
-            customdata = snap_sorted["source"] if has_source else [""] * len(snap_sorted)
-            hover = ("%{x|%d %b %Y}<br>" + label + " (snapshot): %{y:.0f}"
+    has_source = snap_sorted is not None and "source" in snap_sorted.columns
+
+    for label, kind, col, colour, dash, width in selected:
+        if kind == "snapshot":
+            if snap_sorted is None or col not in snap_sorted.columns:
+                continue
+            customdata = (snap_sorted["source"] if has_source
+                          else [""] * len(snap_sorted))
+            hover = ("%{x|%d %b %Y}<br>" + label + ": %{y:.0f}"
                      + ("<br>Source: %{customdata}" if has_source else "")
                      + "<extra></extra>")
             fig.add_trace(go.Scatter(
                 x=snap_sorted["date"], y=snap_sorted[col],
-                mode="lines", name=f"{label} (snapshot)",
-                line=dict(color=COLOURS[col], width=1.6, dash="dot"),
-                customdata=customdata,
-                hovertemplate=hover,
+                mode="markers+lines", name=label,
+                line=dict(color=colour, width=width, dash=dash),
+                marker=dict(size=6, color=colour),
+                customdata=customdata, hovertemplate=hover,
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=series["date"], y=series[col],
+                mode="lines", name=label,
+                line=dict(color=colour, width=width, dash=dash),
+                hovertemplate="%{x|%d %b %Y}<br>" + label
+                + ": %{y:.0f}<extra></extra>",
             ))
 
     fig.update_layout(
-        title=dict(text="Cumulative cases — interpolated (solid) vs snapshots (dotted)",
+        title=dict(text="Cumulative cases (interpolated)",
                    font=dict(size=15, color="#1f4e79"), x=0.01),
         xaxis_title="Date", yaxis_title="Cumulative count",
         template="simple_white", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="top", y=-0.22,
-                    xanchor="center", x=0.5, font=dict(size=11)),
-        margin=dict(l=60, r=20, t=50, b=130), height=540,
+        showlegend=False,
+        margin=dict(l=60, r=20, t=44, b=24), height=340,
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
     fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
                       linecolor="#cfd6df", tickformat="%d %b %Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
+    if not selected:
+        fig.add_annotation(text="Tick a series above to plot it",
+                           xref="paper", yref="paper", x=0.5, y=0.5,
+                           showarrow=False,
+                           font=dict(size=13, color="#9aa3af"))
     return fig
 
 
@@ -4702,9 +4784,11 @@ with right:
             st.plotly_chart(_fig_daily, use_container_width=True, key="daily")
             render_daily_legend(series)
         with tab2:
-            _fig_cum = cumulative_chart(series, chart_snaps)
+            _cum_selected = cum_selected_from_state(series, chart_snaps)
+            _fig_cum = cumulative_chart(series, chart_snaps, _cum_selected)
             st.session_state["chart_cumulative"] = _fig_cum
-            chart_with_line_filter(_fig_cum, key="cum")
+            st.plotly_chart(_fig_cum, use_container_width=True, key="cum")
+            render_cum_legend(series, chart_snaps)
         with tab3:
             smooth_raw_cols = [c for c in
                                ["new_confirmed_raw", "new_suspected_raw",
