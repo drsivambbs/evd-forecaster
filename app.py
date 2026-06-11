@@ -4725,7 +4725,7 @@ with left:
 # -------------------------------------------------------------------------
 with right:
     st.markdown('<div class="freeze-right"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Output</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">Summary</div>', unsafe_allow_html=True)
     series = st.session_state.get("result_series")
     chart_snaps = st.session_state.get("result_chart_snaps")
 
