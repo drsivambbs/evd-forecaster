@@ -877,16 +877,18 @@ st.markdown(
          .st-key-<key> class to each keyed widget's container, so these rules
          shrink ONLY the daily-legend checkboxes (keys start d1_show_). */
       .mini-legend-label {
-        font-size: 0.68rem; color: var(--muted); text-transform: uppercase;
-        letter-spacing: 0.05em; margin: 0.35rem 0 0.15rem 0;
+        font-size: 0.66rem; color: var(--muted); text-transform: uppercase;
+        letter-spacing: 0.05em; margin: 0.15rem 0 0.1rem 0;
       }
       .mini-legend-group {
-        font-weight: 600; color: var(--brand); font-size: 0.7rem;
+        font-weight: 600; color: var(--brand); font-size: 0.68rem;
         text-transform: uppercase; letter-spacing: 0.04em;
-        margin-bottom: 0.05rem;
+        margin-bottom: 0.0rem;
       }
-      [class*="st-key-d1_show_"] { margin-bottom: -0.55rem; }
-      [class*="st-key-d1_show_"] p { font-size: 0.72rem; line-height: 1.15; }
+      [class*="st-key-d1_show_"] { margin-bottom: -0.7rem; }
+      [class*="st-key-d1_show_"] p { font-size: 0.7rem; line-height: 1.1; }
+      /* trim Plotly's bottom whitespace so the legend sits right under it */
+      div[data-testid="stPlotlyChart"] { margin-bottom: -0.4rem; }
       div[data-testid="stRadio"] label p { font-size: 0.88rem; }
       div[data-testid="stCaptionContainer"] { color: var(--muted); }
       .stButton > button[kind="primary"] {
@@ -1441,7 +1443,7 @@ def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
         xaxis_title="Date", yaxis_title="New cases per day",
         template="simple_white", hovermode="x unified",
         showlegend=False,
-        margin=dict(l=60, r=20, t=50, b=40), height=460,
+        margin=dict(l=60, r=20, t=44, b=24), height=340,
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
