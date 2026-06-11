@@ -1320,96 +1320,116 @@ def chart_with_line_filter(fig: go.Figure, key: str,
                    "that line.")
 
 
-def daily_chart(series: pd.DataFrame) -> go.Figure:
+# The Step-1 "Daily new" chart exposes exactly these 7 logical series, grouped
+# into three legend containers. Each entry is
+#   (label, [candidate columns in priority order], colour, dash, width).
+# The first candidate column present in the built series is the one plotted;
+# entries with no available column render as a disabled checkbox.
+DAILY_LEGEND_GROUPS = [
+    ("Suspected", [
+        ("Actual Suspected", ["new_suspected_raw", "new_suspected"],
+         "#FF8C00", "solid", 2.2),
+        ("Estimated Suspected", ["new_suspected_estimated"],
+         "#b8860b", "dot", 1.8),
+        ("Estimated Suspected Smoothened",
+         ["new_suspected_estimated_smooth"], "#b8860b", "dash", 2.2),
+    ]),
+    ("Confirmed", [
+        ("Actual Confirmed", ["new_confirmed_raw", "new_confirmed"],
+         "#4682B4", "solid", 2.2),
+        ("Estimated Confirmed", ["new_cfr_estimated"],
+         "#6a1b9a", "dot", 1.8),
+        ("Estimated Confirmed Smoothened",
+         ["new_cfr_estimated_smooth", "new_cfr_estimated_sma"],
+         "#6a1b9a", "dash", 2.2),
+    ]),
+    ("Death", [
+        ("Actual Death", ["new_deaths_raw", "new_deaths"],
+         "#B22222", "solid", 2.2),
+    ]),
+]
+
+# Checked by default: the three observed "actual" lines. Estimates are opt-in.
+DAILY_LEGEND_DEFAULT_ON = {"Actual Suspected", "Actual Confirmed",
+                           "Actual Death"}
+
+# Coloured dot prefixed to each checkbox label so it reads like a legend.
+_DAILY_SWATCH = {"#FF8C00": "🟠", "#b8860b": "🟡", "#4682B4": "🔵",
+                 "#6a1b9a": "🟣", "#B22222": "🔴"}
+
+
+def _resolve_daily_col(series: pd.DataFrame, candidates):
+    """First candidate column actually present in the built series, else None."""
+    for c in candidates:
+        if c in series.columns:
+            return c
+    return None
+
+
+def render_daily_legend(series: pd.DataFrame) -> list:
+    """Render the 3-container checkbox legend for the Step-1 daily chart and
+    return the resolved traces to plot:
+        [(label, column, colour, dash, width), ...]
+    one tuple per series that is both available in the data and checked."""
+    st.markdown('<div class="section-label">Show series</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(len(DAILY_LEGEND_GROUPS))
+    selected = []
+    for (group_name, items), col in zip(DAILY_LEGEND_GROUPS, cols):
+        with col:
+            st.markdown(
+                f'<div style="font-weight:600; color:#1f4e79; '
+                f'font-size:0.78rem; text-transform:uppercase; '
+                f'letter-spacing:0.04em; margin-bottom:0.1rem;">'
+                f'{group_name}</div>', unsafe_allow_html=True)
+            for label, candidates, colour, dash, width in items:
+                resolved = _resolve_daily_col(series, candidates)
+                available = resolved is not None
+                swatch = _DAILY_SWATCH.get(colour, "")
+                show = st.checkbox(
+                    f"{swatch} {label}",
+                    value=available and label in DAILY_LEGEND_DEFAULT_ON,
+                    key="d1_show_" + _slug(label),
+                    disabled=not available,
+                    help=None if available else
+                    "Not available for the current inputs — enable the matching "
+                    "estimate / smoothing option on the left, then regenerate.")
+                if show and available:
+                    selected.append((label, resolved, colour, dash, width))
+    return selected
+
+
+def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
+    """Daily-incidence chart driven by the checkbox legend. `selected` is the
+    list returned by render_daily_legend — only those traces are drawn, and the
+    built-in Plotly legend is suppressed in favour of the checkboxes."""
     fig = go.Figure()
-    for col, label in [
-        ("new_confirmed", "New confirmed"),
-        ("new_suspected", "New suspected"),
-        ("new_deaths", "New deaths"),
-    ]:
-        raw_col = f"{col}_raw"
-        if raw_col in series.columns:
-            # Smoothing active — draw the raw observed series faintly behind
-            # the bold smoothed line.
-            fig.add_trace(go.Scatter(
-                x=series["date"], y=series[raw_col],
-                mode="lines", name=label + " (raw)",
-                line=dict(color=COLOURS[col], width=1.0, dash="dot"),
-                opacity=0.4,
-                hovertemplate="%{x|%d %b %Y}<br>" + label
-                + " (raw): %{y:.0f}<extra></extra>",
-            ))
-            plot_label = label + " (smoothed)"
-        else:
-            plot_label = label
+    for label, col, colour, dash, width in selected:
         fig.add_trace(go.Scatter(
             x=series["date"], y=series[col],
-            mode="lines", name=plot_label,
-            line=dict(color=COLOURS[col], width=2.2),
-            hovertemplate="%{x|%d %b %Y}<br>" + plot_label
+            mode="lines", name=label,
+            line=dict(color=colour, width=width, dash=dash),
+            hovertemplate="%{x|%d %b %Y}<br>" + label
             + ": %{y:.1f}<extra></extra>",
         ))
-    if "new_cfr_estimated" in series.columns:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series["new_cfr_estimated"],
-            mode="lines", name="Estimated new cases (CFR)",
-            line=dict(color="#6a1b9a", width=2.4, dash="solid"),
-            hovertemplate="%{x|%d %b %Y}<br>CFR estimate: %{y:.0f}<extra></extra>",
-        ))
-    if "new_cfr_estimated_sma" in series.columns:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series["new_cfr_estimated_sma"],
-            mode="lines", name="CFR estimate (SMA)",
-            line=dict(color="#6a1b9a", width=1.6, dash="dash"),
-            hovertemplate="%{x|%d %b %Y}<br>CFR estimate (SMA): %{y:.1f}<extra></extra>",
-        ))
-    if "new_deaths_sma" in series.columns:
-        fig.add_trace(go.Scatter(
-            x=series["date"], y=series["new_deaths_sma"],
-            mode="lines", name="New deaths (SMA)",
-            line=dict(color=COLOURS["new_deaths"], width=1.4, dash="dash"),
-            hovertemplate="%{x|%d %b %Y}<br>Deaths (SMA): %{y:.1f}<extra></extra>",
-        ))
-    # Estimated suspected (Confirmed ÷ ratio). Observed new_suspected is often 0
-    # in the source data, so draw the estimate explicitly.
-    if "new_suspected_estimated" in series.columns:
-        if "new_suspected_estimated_smooth" in series.columns:
-            fig.add_trace(go.Scatter(
-                x=series["date"], y=series["new_suspected_estimated"],
-                mode="lines", name="Est. suspected (raw)",
-                line=dict(color="#b8860b", width=1.0, dash="dot"), opacity=0.4,
-                hovertemplate="%{x|%d %b %Y}<br>Est. suspected (raw): "
-                "%{y:.0f}<extra></extra>",
-            ))
-            fig.add_trace(go.Scatter(
-                x=series["date"], y=series["new_suspected_estimated_smooth"],
-                mode="lines", name="Est. suspected (smoothed)",
-                line=dict(color="#b8860b", width=2.2, dash="dash"),
-                hovertemplate="%{x|%d %b %Y}<br>Est. suspected (smoothed): "
-                "%{y:.1f}<extra></extra>",
-            ))
-        else:
-            fig.add_trace(go.Scatter(
-                x=series["date"], y=series["new_suspected_estimated"],
-                mode="lines", name="Est. suspected",
-                line=dict(color="#b8860b", width=2.2, dash="dash"),
-                hovertemplate="%{x|%d %b %Y}<br>Est. suspected: "
-                "%{y:.0f}<extra></extra>",
-            ))
     fig.update_layout(
         title=dict(text="Daily new cases (interpolated)",
                    font=dict(size=15, color="#1f4e79"), x=0.01),
         xaxis_title="Date", yaxis_title="New cases per day",
         template="simple_white", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="top", y=-0.22,
-                    xanchor="center", x=0.5, font=dict(size=11)),
-        margin=dict(l=60, r=20, t=50, b=90), height=460,
+        showlegend=False,
+        margin=dict(l=60, r=20, t=50, b=40), height=460,
         font=dict(family="Inter, Segoe UI, sans-serif", size=12, color="#333"),
         plot_bgcolor="white",
     )
     fig.update_xaxes(showgrid=True, gridcolor="#eef1f5",
                       linecolor="#cfd6df", tickformat="%d %b %Y")
     fig.update_yaxes(showgrid=True, gridcolor="#eef1f5", linecolor="#cfd6df")
+    if not selected:
+        fig.add_annotation(text="Tick a series above to plot it",
+                           xref="paper", yref="paper", x=0.5, y=0.5,
+                           showarrow=False,
+                           font=dict(size=13, color="#9aa3af"))
     return fig
 
 
@@ -4644,9 +4664,10 @@ with right:
 
         tab1, tab2, tab3 = st.tabs(["Daily new", "Cumulative", "Table"])
         with tab1:
-            _fig_daily = daily_chart(series)
+            _daily_selected = render_daily_legend(series)
+            _fig_daily = daily_chart(series, _daily_selected)
             st.session_state["chart_daily"] = _fig_daily
-            chart_with_line_filter(_fig_daily, key="daily")
+            st.plotly_chart(_fig_daily, use_container_width=True, key="daily")
         with tab2:
             _fig_cum = cumulative_chart(series, chart_snaps)
             st.session_state["chart_cumulative"] = _fig_cum
