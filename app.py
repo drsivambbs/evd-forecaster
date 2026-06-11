@@ -1796,8 +1796,10 @@ def legend_checked(groups, key_prefix: str, default_on, available) -> set:
     return checked
 
 
-def render_legend(groups, key_prefix: str, default_on, available) -> None:
-    """Compact 3-container checkbox legend rendered below a chart."""
+def render_legend(groups, key_prefix: str, default_on, available,
+                  help_overrides=None) -> None:
+    """Compact 3-container checkbox legend rendered below a chart.
+    help_overrides: optional {label: tooltip} shown when a box is disabled."""
     st.markdown('<div class="mini-legend-label">Legend — tick to show</div>',
                 unsafe_allow_html=True)
     cols = st.columns(len(groups))
@@ -1807,13 +1809,16 @@ def render_legend(groups, key_prefix: str, default_on, available) -> None:
                         unsafe_allow_html=True)
             for label, swatch in items:
                 avail = available.get(label, True)
+                help_txt = None
+                if not avail:
+                    help_txt = (help_overrides or {}).get(
+                        label, "Not available for the current inputs.")
                 st.checkbox(
                     f"{swatch} {label}",
                     value=avail and label in default_on,
                     key=key_prefix + _slug(label),
                     disabled=not avail,
-                    help=None if avail else
-                    "Not available for the current inputs.")
+                    help=help_txt)
 
 
 def rt_combined_chart(daily: pd.DataFrame, rt_df: pd.DataFrame,
@@ -3862,16 +3867,31 @@ if st.session_state["step"] == "forecast":
             _fc_has_band = any(isinstance(v, dict)
                                for s in scenarios_out.values()
                                for v in s.values())
+
+            def _med0(m):
+                return m["median"] if isinstance(m, dict) else m
+            # Suspected is invisible (esp. on a log axis) when it is all zero —
+            # which happens with confirmed-only data or CFR='Total cases'. Detect
+            # it so the checkbox is disabled with an explanation instead of a
+            # silently-missing line.
+            _fc_has_susp = any(
+                float(np.nanmax(_med0(s["cum_suspected"]))) > 0
+                for s in scenarios_out.values())
             _fc_groups = [
                 ("Series", [("Confirmed", "🔵"), ("Suspected", "🟠"),
                             ("Deaths", "🔴")]),
                 ("Overlays", [("90% PI band", "▦"), ("Baseline", "┈")]),
             ]
-            _fc_avail = {"Confirmed": True, "Suspected": True, "Deaths": True,
-                         "90% PI band": _fc_has_band,
+            _fc_avail = {"Confirmed": True, "Suspected": _fc_has_susp,
+                         "Deaths": True, "90% PI band": _fc_has_band,
                          "Baseline": _fc_is_cumulative}
             _fc_default = {"Confirmed", "Suspected", "Deaths",
                            "90% PI band", "Baseline"}
+            _fc_help = {"Suspected":
+                        "Suspected is 0 for this forecast — either there is no "
+                        "suspected data, or CFR was applied as 'Total cases' "
+                        "(folded into Confirmed). Turn on 'Estimate suspected' "
+                        "in Step 1 to project a suspected series."}
             _fc_sel = legend_checked(_fc_groups, "fc_show_",
                                      _fc_default, _fc_avail)
             _fig_forecast = forecast_chart(
@@ -3883,7 +3903,8 @@ if st.session_state["step"] == "forecast":
             st.session_state["chart_forecast"] = _fig_forecast
             st.plotly_chart(_fig_forecast, use_container_width=True,
                             key="forecast")
-            render_legend(_fc_groups, "fc_show_", _fc_default, _fc_avail)
+            render_legend(_fc_groups, "fc_show_", _fc_default, _fc_avail,
+                          help_overrides=_fc_help)
 
             # --- Summary cards: 180-day totals per scenario ---
             st.markdown(
@@ -3905,6 +3926,7 @@ if st.session_state["step"] == "forecast":
                 return (metric["upper"] if isinstance(metric, dict)
                         else metric)
 
+            _tot_rows = []
             for name, data in scenarios_out.items():
                 cum_conf_med = _median(data["cum_confirmed"])
                 cum_susp_med = _median(data["cum_suspected"])
@@ -3922,42 +3944,35 @@ if st.session_state["step"] == "forecast":
 
                 # Projected last case (median trajectory)
                 above_thresh = np.where(new_conf_med >= 0.5)[0]
-                if len(above_thresh) > 0 and above_thresh[-1] < len(horizon_dates) - 1:
+                if (len(above_thresh) > 0
+                        and above_thresh[-1] < len(horizon_dates) - 1):
                     last_case_date = horizon_dates[above_thresh[-1]]
-                    who_eoo_date = last_case_date + pd.Timedelta(days=42)
-                    eoo_html = (
-                        f'<br><span style="color:#5b6573;">Projected last case: '
-                        f'<b>{last_case_date.strftime("%d %b %Y")}</b> · '
-                        f'WHO 42-day EOO declaration: '
-                        f'<b style="color:#1f7a3a;">'
-                        f'{who_eoo_date.strftime("%d %b %Y")}</b></span>'
-                    )
+                    last_case_str = last_case_date.strftime("%d %b %Y")
+                    who_eoo_str = (last_case_date
+                                   + pd.Timedelta(days=42)).strftime("%d %b %Y")
                 else:
-                    eoo_html = (
-                        '<br><span style="color:#B22222;">Outbreak still active at '
-                        f'horizon end ({horizon_dates[-1].strftime("%d %b %Y")}) '
-                        '— extend horizon to find an end date.</span>'
-                    )
+                    last_case_str = "Active at horizon"
+                    who_eoo_str = "—"
 
-                st.markdown(
-                    f'<div style="border-left:4px solid {SCENARIO_COLOURS[name]}; '
-                    f'background:#fafbfc; padding:0.5rem 0.8rem; '
-                    f'margin-bottom:0.4rem; font-size:0.85rem;">'
-                    f'<b style="color:{SCENARIO_COLOURS[name]};">{name}</b> '
-                    f'— {scen_defaults[name]["label"]}<br>'
-                    f'Confirmed: <b>{c_end:,.0f}</b> '
-                    f'<span style="color:#5b6573;">[{c_lo:,.0f}–{c_hi:,.0f}]</span>  '
-                    f'· Suspected: <b>{s_end:,.0f}</b>  '
-                    f'· Deaths: <b>{d_end:,.0f}</b> '
-                    f'<span style="color:#5b6573;">[{d_lo:,.0f}–{d_hi:,.0f}]</span><br>'
-                    f'<span style="color:#5b6573;">Peak new confirmed (median): '
-                    f'{peak_val:.1f} on {peak_day.strftime("%d %b %Y")} · '
-                    f'90% PI from {st.session_state.get("fc_n_samples", "?")} '
-                    f'posterior draws</span>'
-                    f'{eoo_html}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+                _tot_rows.append({
+                    "Scenario": f"{name} — {scen_defaults[name]['label']}",
+                    "Confirmed": round(c_end),
+                    "Confirmed 90% PI": f"{c_lo:,.0f}–{c_hi:,.0f}",
+                    "Suspected": round(s_end),
+                    "Deaths": round(d_end),
+                    "Deaths 90% PI": f"{d_lo:,.0f}–{d_hi:,.0f}",
+                    "Peak new conf.": round(peak_val, 1),
+                    "Peak day": peak_day.strftime("%d %b %Y"),
+                    "Projected last case": last_case_str,
+                    "WHO 42-day EOO": who_eoo_str,
+                })
+
+            st.dataframe(pd.DataFrame(_tot_rows), hide_index=True,
+                         use_container_width=True)
+            st.caption(
+                f"90% PI from {st.session_state.get('fc_n_samples', '?')} "
+                "posterior R_t draws. 'Active at horizon' = the outbreak has "
+                "not ended within the forecast window.")
 
             # --- Table + download (collapsed) ---
             with st.expander("Show table / data", expanded=False):
