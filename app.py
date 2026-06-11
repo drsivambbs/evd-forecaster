@@ -873,6 +873,20 @@ st.markdown(
         overflow-y: auto;
         overflow-x: hidden;
       }
+      /* Compact checkbox legend below the Step-1 daily chart. Streamlit adds a
+         .st-key-<key> class to each keyed widget's container, so these rules
+         shrink ONLY the daily-legend checkboxes (keys start d1_show_). */
+      .mini-legend-label {
+        font-size: 0.68rem; color: var(--muted); text-transform: uppercase;
+        letter-spacing: 0.05em; margin: 0.35rem 0 0.15rem 0;
+      }
+      .mini-legend-group {
+        font-weight: 600; color: var(--brand); font-size: 0.7rem;
+        text-transform: uppercase; letter-spacing: 0.04em;
+        margin-bottom: 0.05rem;
+      }
+      [class*="st-key-d1_show_"] { margin-bottom: -0.55rem; }
+      [class*="st-key-d1_show_"] p { font-size: 0.72rem; line-height: 1.15; }
       div[data-testid="stRadio"] label p { font-size: 0.88rem; }
       div[data-testid="stCaptionContainer"] { color: var(--muted); }
       .stButton > button[kind="primary"] {
@@ -1366,27 +1380,39 @@ def _resolve_daily_col(series: pd.DataFrame, candidates):
     return None
 
 
-def render_daily_legend(series: pd.DataFrame) -> list:
-    """Render the 3-container checkbox legend for the Step-1 daily chart and
-    return the resolved traces to plot:
-        [(label, column, colour, dash, width), ...]
-    one tuple per series that is both available in the data and checked."""
-    st.markdown('<div class="section-label">Show series</div>',
+def daily_selected_from_state(series: pd.DataFrame) -> list:
+    """Resolve which daily-chart traces to draw from the checkbox state already
+    in session_state. The checkboxes themselves are rendered *below* the chart
+    by render_daily_legend, so here we just read their persisted values (with
+    the same defaults) to decide what to plot above them."""
+    selected = []
+    for _group, items in DAILY_LEGEND_GROUPS:
+        for label, candidates, colour, dash, width in items:
+            resolved = _resolve_daily_col(series, candidates)
+            if resolved is None:
+                continue
+            key = "d1_show_" + _slug(label)
+            default = label in DAILY_LEGEND_DEFAULT_ON
+            if st.session_state.get(key, default):
+                selected.append((label, resolved, colour, dash, width))
+    return selected
+
+
+def render_daily_legend(series: pd.DataFrame) -> None:
+    """Compact 3-container checkbox legend, rendered *below* the daily chart.
+    Each of the 7 logical series has a colour-dot checkbox; ticking it adds the
+    line. Series the current inputs can't produce show as disabled checkboxes."""
+    st.markdown('<div class="mini-legend-label">Legend — tick to show</div>',
                 unsafe_allow_html=True)
     cols = st.columns(len(DAILY_LEGEND_GROUPS))
-    selected = []
     for (group_name, items), col in zip(DAILY_LEGEND_GROUPS, cols):
         with col:
-            st.markdown(
-                f'<div style="font-weight:600; color:#1f4e79; '
-                f'font-size:0.78rem; text-transform:uppercase; '
-                f'letter-spacing:0.04em; margin-bottom:0.1rem;">'
-                f'{group_name}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="mini-legend-group">{group_name}</div>',
+                        unsafe_allow_html=True)
             for label, candidates, colour, dash, width in items:
-                resolved = _resolve_daily_col(series, candidates)
-                available = resolved is not None
+                available = _resolve_daily_col(series, candidates) is not None
                 swatch = _DAILY_SWATCH.get(colour, "")
-                show = st.checkbox(
+                st.checkbox(
                     f"{swatch} {label}",
                     value=available and label in DAILY_LEGEND_DEFAULT_ON,
                     key="d1_show_" + _slug(label),
@@ -1394,9 +1420,6 @@ def render_daily_legend(series: pd.DataFrame) -> list:
                     help=None if available else
                     "Not available for the current inputs — enable the matching "
                     "estimate / smoothing option on the left, then regenerate.")
-                if show and available:
-                    selected.append((label, resolved, colour, dash, width))
-    return selected
 
 
 def daily_chart(series: pd.DataFrame, selected: list) -> go.Figure:
@@ -4664,10 +4687,11 @@ with right:
 
         tab1, tab2, tab3 = st.tabs(["Daily new", "Cumulative", "Table"])
         with tab1:
-            _daily_selected = render_daily_legend(series)
+            _daily_selected = daily_selected_from_state(series)
             _fig_daily = daily_chart(series, _daily_selected)
             st.session_state["chart_daily"] = _fig_daily
             st.plotly_chart(_fig_daily, use_container_width=True, key="daily")
+            render_daily_legend(series)
         with tab2:
             _fig_cum = cumulative_chart(series, chart_snaps)
             st.session_state["chart_cumulative"] = _fig_cum
