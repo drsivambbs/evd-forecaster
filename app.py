@@ -1325,8 +1325,12 @@ def smooth_incidence(series: pd.DataFrame, window: int) -> pd.DataFrame:
     for col in ["new_confirmed", "new_suspected", "new_deaths"]:
         if col in out.columns:
             out[f"{col}_raw"] = out[col].astype(float)
-            out[col] = (out[col].astype(float)
+            smoothed = (out[col].astype(float)
                         .rolling(window=w, min_periods=1).mean())
+            out[col] = smoothed
+            # Explicit smoothed copy so the chart can offer an
+            # "Actual <series> Smoothened" line alongside the raw observed one.
+            out[f"{col}_smooth"] = smoothed
     # Standalone-smoothed copy of the CFR-estimated incidence. Kept in a
     # separate column (not overwritten) so the raw CFR estimate in
     # new_cfr_estimated is preserved for the "Estimated Confirmed" option and
@@ -1375,6 +1379,8 @@ DAILY_LEGEND_GROUPS = [
     ("Suspected", [
         ("Actual Suspected", ["new_suspected_raw", "new_suspected"],
          "#FF8C00", "solid", 2.2),
+        ("Actual Suspected Smoothened", ["new_suspected_smooth"],
+         "#FF8C00", "dash", 2.2),
         ("Estimated Suspected", ["new_suspected_estimated"],
          "#b8860b", "dot", 1.8),
         ("Estimated Suspected Smoothened",
@@ -1383,6 +1389,8 @@ DAILY_LEGEND_GROUPS = [
     ("Confirmed", [
         ("Actual Confirmed", ["new_confirmed_raw", "new_confirmed"],
          "#4682B4", "solid", 2.2),
+        ("Actual Confirmed Smoothened", ["new_confirmed_smooth"],
+         "#4682B4", "dash", 2.2),
         ("Estimated Confirmed", ["new_cfr_estimated"],
          "#6a1b9a", "dot", 1.8),
         ("Estimated Confirmed Smoothened",
@@ -1392,12 +1400,19 @@ DAILY_LEGEND_GROUPS = [
     ("Death", [
         ("Actual Death", ["new_deaths_raw", "new_deaths"],
          "#B22222", "solid", 2.2),
+        ("Actual Death Smoothened", ["new_deaths_smooth"],
+         "#B22222", "dash", 2.2),
     ]),
 ]
 
-# Checked by default: the three observed "actual" lines. Estimates are opt-in.
-DAILY_LEGEND_DEFAULT_ON = {"Actual Suspected", "Actual Confirmed",
-                           "Actual Death"}
+# Checked by default: the observed "actual" lines, plus their smoothed copies
+# (only available — and so only shown — when Step-1 smoothing is active).
+# Estimated series stay opt-in.
+DAILY_LEGEND_DEFAULT_ON = {
+    "Actual Suspected", "Actual Confirmed", "Actual Death",
+    "Actual Suspected Smoothened", "Actual Confirmed Smoothened",
+    "Actual Death Smoothened",
+}
 
 # Coloured dot prefixed to each checkbox label so it reads like a legend.
 _DAILY_SWATCH = {"#FF8C00": "🟠", "#b8860b": "🟡", "#4682B4": "🔵",
