@@ -878,18 +878,18 @@ st.markdown(
          shrink ONLY the daily-legend checkboxes (keys start d1_show_). */
       .mini-legend-label {
         font-size: 0.66rem; color: var(--muted); text-transform: uppercase;
-        letter-spacing: 0.05em; margin: 0.15rem 0 0.1rem 0;
+        letter-spacing: 0.05em; margin: 0.3rem 0 0.25rem 0;
       }
       .mini-legend-group {
-        font-weight: 600; color: var(--brand); font-size: 0.68rem;
+        font-weight: 600; color: var(--brand); font-size: 0.7rem;
         text-transform: uppercase; letter-spacing: 0.04em;
-        margin-bottom: 0.0rem;
+        margin: 0 0 0.5rem 0; padding-bottom: 0.22rem;
+        border-bottom: 1px solid var(--line);
       }
-      /* Compact label; spacing comes from the reduced panel gap below — NO
-         negative margin here, otherwise a wrapped 2-line label overlaps the
-         next checkbox. */
+      /* Compact labels; no negative margins (those made a wrapped 2-line label
+         collide with the next row, and a flush title collide with row one). */
       [class*="st-key-d1_show_"] p,
-      [class*="st-key-c1_show_"] p { font-size: 0.7rem; line-height: 1.2; }
+      [class*="st-key-c1_show_"] p { font-size: 0.72rem; line-height: 1.25; }
       [class*="st-key-d1_show_"] label,
       [class*="st-key-c1_show_"] label { align-items: flex-start; }
       /* trim Plotly's bottom whitespace so the legend sits right under it */
