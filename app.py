@@ -859,6 +859,20 @@ st.markdown(
       div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {
         padding-left: 1.4rem;
       }
+      /* Freeze the right output column so it stays visible while the left
+         input column scrolls. The empty .freeze-right anchor (placed at the
+         top of each right column) lets us target *only* those columns via
+         :has(), leaving the header / Excel-row columns untouched. */
+      [data-testid="stElementContainer"]:has(.freeze-right) { display: none; }
+      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:has(.freeze-right),
+      div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has(.freeze-right) {
+        position: sticky;
+        top: 0.75rem;
+        align-self: flex-start;
+        max-height: calc(100vh - 1.5rem);
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
       div[data-testid="stRadio"] label p { font-size: 0.88rem; }
       div[data-testid="stCaptionContainer"] { color: var(--muted); }
       .stButton > button[kind="primary"] {
@@ -2938,6 +2952,7 @@ if st.session_state["step"] == "eoo":
             st.session_state["eoo_threshold"] = float(threshold)
 
     with right4:
+        st.markdown('<div class="freeze-right"></div>', unsafe_allow_html=True)
         top_row = st.columns([1, 0.18])
         with top_row[0]:
             st.markdown('<div class="panel-title">EOO output</div>',
@@ -3547,6 +3562,7 @@ if st.session_state["step"] == "forecast":
             st.session_state["fc_n_samples"] = N_SAMPLES
 
     with right3:
+        st.markdown('<div class="freeze-right"></div>', unsafe_allow_html=True)
         top_row = st.columns([1, 0.18])
         with top_row[0]:
             st.markdown('<div class="panel-title">Forecast output</div>',
@@ -3976,6 +3992,7 @@ if st.session_state["step"] == "rt":
                 st.session_state["rt_si_sd"] = si_sd
 
     with right2:
+        st.markdown('<div class="freeze-right"></div>', unsafe_allow_html=True)
         top_row = st.columns([1, 0.18])
         with top_row[0]:
             st.markdown('<div class="panel-title">R_t output</div>',
@@ -4563,6 +4580,7 @@ with left:
 # RIGHT — Output panel
 # -------------------------------------------------------------------------
 with right:
+    st.markdown('<div class="freeze-right"></div>', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">Output</div>', unsafe_allow_html=True)
     series = st.session_state.get("result_series")
     chart_snaps = st.session_state.get("result_chart_snaps")
