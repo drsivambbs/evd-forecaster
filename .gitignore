@@ -5,6 +5,8 @@ __pycache__/
 venv/
 .env
 .streamlit/secrets.toml
+.secrets/
+*-service-account.json
 .DS_Store
 Thumbs.db
 .idea/

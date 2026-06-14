@@ -4499,7 +4499,7 @@ with left:
     with c2:
         input_method = st.radio(
             "Input method",
-            ["Manual entry", "CSV upload"],
+            ["Manual entry", "CSV upload", "Load from Firestore"],
             key="input_method",
         )
 
@@ -4508,6 +4508,25 @@ with left:
 
     snapshots = None
     incidence_df = None
+
+    # Active-input badge — at-a-glance cue for which method + value type is
+    # feeding Step 1 (so a Firestore pull isn't mistaken for the manual seed).
+    _badge = {
+        "Manual entry":       ("✍️", "#1f4e79", "#e7f0fa", "Manual entry"),
+        "CSV upload":         ("📄", "#1f4e79", "#e7f0fa", "CSV upload"),
+        "Load from Firestore": ("🔥", "#b8541a", "#fdeee1",
+                                 "Live Firestore store"),
+    }.get(input_method, ("•", "#5b6573", "#f1f4f8", input_method))
+    _vt_lbl = "Cumulative" if value_type == "Cumulative" else "Incidence (daily new)"
+    st.markdown(
+        f'<div style="margin:0.2rem 0 0.6rem 0; padding:0.4rem 0.75rem; '
+        f'background:{_badge[2]}; border-left:4px solid {_badge[1]}; '
+        f'border-radius:5px; font-size:0.83rem; color:{_badge[1]};">'
+        f'{_badge[0]} <b>Active input:</b> {_badge[3]} '
+        f'<span style="color:#5b6573;">· values are</span> <b>{_vt_lbl}</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     VALUE_COLS = (
         ["cumulative_confirmed", "cumulative_suspected", "cumulative_deaths"]
@@ -4605,7 +4624,7 @@ with left:
             if is_cumulative
             else "Daily rows used as-is; gappy rows distributed uniformly across the window."
         )
-    else:
+    elif input_method == "CSV upload":
         required = ["date"] + VALUE_COLS
         optional_note = " Optional: `source`." if per_row_source else ""
         st.caption(
@@ -4639,6 +4658,54 @@ with left:
                         snapshots = raw_df
                     else:
                         incidence_df = raw_df
+
+    else:  # "Load from Firestore" — reads the evd-snapshot-store project.
+        try:
+            import firestore_store as fss
+        except Exception as e:
+            st.error(f"Firestore store unavailable: {e}")
+            fss = None
+        if fss is not None:
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                fs_location = st.selectbox(
+                    "Outbreak location", fss.LOCATIONS, key="fs_location",
+                    help="Pulls stored snapshots for this outbreak from the "
+                         "evd-snapshot-store Firestore project.")
+            with fc2:
+                fs_as_of = st.date_input(
+                    "As-of date", value=date.today(), format="DD MMM YYYY",
+                    key="fs_as_of",
+                    help="For each event date, uses the latest bulletin "
+                         "published on or before this date — set it back in "
+                         "time to backtest what the data looked like then.")
+            fs_vtype = "cumulative" if is_cumulative else "incidence"
+            try:
+                fs_df = fss.load_for_step1(fs_location, fs_vtype,
+                                            as_of=fs_as_of)
+            except Exception as e:
+                st.error(f"Could not load from Firestore: {e}")
+                fs_df = None
+            if fs_df is None:
+                pass
+            elif fs_df.empty:
+                st.warning(
+                    f"No {fs_vtype} snapshots stored for {fs_location} as of "
+                    f"{fs_as_of:%d %b %Y}. Add data via the data-entry app "
+                    "(`streamlit run data_entry.py`), or switch the "
+                    "'Values are' toggle to match the stored value type.")
+            else:
+                st.success(
+                    f"Loaded {len(fs_df)} date(s) for {fs_location} "
+                    f"({fs_vtype}) as of {fs_as_of:%d %b %Y}.")
+                preview = fs_df.head(8).copy()
+                preview["date"] = pd.to_datetime(
+                    preview["date"]).dt.strftime("%d %b %Y")
+                st.dataframe(preview, use_container_width=True, height=220)
+                if is_cumulative:
+                    snapshots = fs_df
+                else:
+                    incidence_df = fs_df
 
     # ------------------------------------------------------------------
     # Standalone smoothing (independent of CFR) — a moving average over the
