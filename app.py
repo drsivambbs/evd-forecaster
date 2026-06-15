@@ -4674,7 +4674,7 @@ with left:
                          "evd-snapshot-store Firestore project.")
             with fc2:
                 fs_as_of = st.date_input(
-                    "As-of date", value=date.today(), format="DD MMM YYYY",
+                    "As-of date", value=date.today(), format="DD/MM/YYYY",
                     key="fs_as_of",
                     help="For each event date, uses the latest bulletin "
                          "published on or before this date — set it back in "

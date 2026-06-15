@@ -73,7 +73,7 @@ def _source_block(prefix: str):
                               key=f"{prefix}_surl")
     with c4:
         as_of = st.date_input("As-of (publication date)", value=date.today(),
-                              format="DD MMM YYYY", key=f"{prefix}_asof",
+                              format="DD/MM/YYYY", key=f"{prefix}_asof",
                               help="When this bulletin was published. The "
                                    "versioning key for backtesting.")
     return {"source_type": s_type, "source_name": s_name,
@@ -107,7 +107,7 @@ with tab_one:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         ev_date = st.date_input("Event date", value=date.today(),
-                                format="DD MMM YYYY", key="one_evdate")
+                                format="DD/MM/YYYY", key="one_evdate")
     with c2:
         confirmed = st.number_input(f"{lbl} confirmed", min_value=0, step=1,
                                     key="one_conf")
