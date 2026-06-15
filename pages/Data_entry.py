@@ -2,8 +2,8 @@
 Data_entry.py — write/admin page for the EVD snapshot store.
 
 A page within the forecaster app (pages/Data_entry.py); reach it from the
-"Open data entry" button on the main page — same app, same URL. Can also be
-run on its own with `streamlit run pages/Data_entry.py`.
+"Open data entry" button on the main page — same app, same URL. Run the whole
+app with `streamlit run app.py` (the page's links need the multipage context).
 
 It only writes to / manages Firestore via firestore_store.py. The forecasting
 app (app.py) imports the SAME module but reads only. Entry flow, as agreed:
@@ -52,32 +52,35 @@ st.page_link("app.py", label="Back to forecaster", icon="🏠")
 
 
 def _require_access():
-    """Gate this page behind a password when one is set in Streamlit secrets.
-
-    If no `data_entry_password` secret exists, access is allowed but a warning
-    is shown (so a fresh deploy isn't accidentally locked out)."""
-    pw = None
+    """Gate this page behind a user id + password set in Streamlit secrets
+    (`data_entry_user`, `data_entry_password`). If no password secret exists,
+    access is allowed but a warning is shown (so a fresh deploy isn't
+    accidentally locked out)."""
     try:
-        if "data_entry_password" in st.secrets:
-            pw = st.secrets["data_entry_password"]
+        pw = st.secrets["data_entry_password"]
     except Exception:
         pw = None
+    try:
+        user = st.secrets["data_entry_user"]
+    except Exception:
+        user = None
     if not pw:
         st.warning(
             "⚠️ Data entry is unprotected — anyone with this app's URL can add "
-            "or delete records. Set `data_entry_password` in Streamlit secrets "
-            "to lock it.")
+            "or delete records. Set `data_entry_user` / `data_entry_password` "
+            "in Streamlit secrets to lock it.")
         return
     if st.session_state.get("_de_authed"):
         return
-    st.markdown("#### 🔒 Data entry is password-protected")
+    st.markdown("#### 🔒 Data entry is restricted")
+    u_in = st.text_input("User ID", key="_de_user") if user else None
     pw_in = st.text_input("Password", type="password", key="_de_pw")
     if st.button("Unlock", key="_de_unlock"):
-        if pw_in == pw:
+        if pw_in == pw and (user is None or u_in == user):
             st.session_state["_de_authed"] = True
             st.rerun()
         else:
-            st.error("Incorrect password.")
+            st.error("Incorrect user ID or password.")
     st.stop()
 
 

@@ -32,8 +32,6 @@ it from the **"Open data entry"** button on the main page. Same app, same URL
 ```powershell
 cd "C:\Users\Windows\Documents\Ebola Modelling\forecast-sandbox"
 streamlit run app.py            # then click "Open data entry"
-# or run the page on its own:
-streamlit run pages/Data_entry.py
 ```
 
 Entry flow: **Location → Source → Value type → Confirmed / Suspected / Deaths**.
