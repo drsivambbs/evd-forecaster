@@ -824,7 +824,8 @@ def build_excel_report() -> bytes:
     return buf.getvalue()
 
 
-st.set_page_config(page_title="EVD Forecaster", layout="wide")
+st.set_page_config(page_title="EVD Forecaster", layout="wide",
+                   initial_sidebar_state="collapsed")
 
 st.markdown(
     """
@@ -836,6 +837,7 @@ st.markdown(
         --muted: #5b6573;
       }
       #MainMenu, header[data-testid="stHeader"], footer {visibility: hidden;}
+      [data-testid="stSidebarNav"] {display: none;}
       .block-container {
         padding-top: 1.4rem;
         padding-bottom: 1rem;
@@ -954,6 +956,10 @@ st.markdown(
     'snapshots or incidence data. Output feeds the renewal-equation forecast model.</div>',
     unsafe_allow_html=True,
 )
+
+# Jump to the data-entry page (same app, same URL) for updating the Firestore
+# snapshot store that Step 1 can pull from.
+st.page_link("pages/Data_entry.py", label="Open data entry", icon="✏️")
 
 # Scenario name (flows into chart titles and downloaded filenames)
 hdr_l, hdr_m, hdr_r = st.columns([2.4, 0.9, 0.9])

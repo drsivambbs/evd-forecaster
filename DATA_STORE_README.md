@@ -23,15 +23,25 @@ ever reads from it.
     Step 1 expects, with as-of reduction applied
 - `data_entry.py` — standalone Streamlit write/admin UI.
 
-## Run the data-entry app
+## Data-entry page
+
+Data entry is a **page inside the forecaster app** (`pages/Data_entry.py`) — open
+it from the **"Open data entry"** button on the main page. Same app, same URL
+(e.g. `evd-sandbox.streamlit.app`); no separate deployment.
 
 ```powershell
-cd "C:\Users\Windows\Documents\Ebola Modelling\forecast-tool"
-streamlit run data_entry.py
+cd "C:\Users\Windows\Documents\Ebola Modelling\forecast-sandbox"
+streamlit run app.py            # then click "Open data entry"
+# or run the page on its own:
+streamlit run pages/Data_entry.py
 ```
 
 Entry flow: **Location → Source → Value type → Confirmed / Suspected / Deaths**.
 Three tabs: *Add one*, *Bulk add* (one bulletin, many dates), *Browse / manage*.
+
+**Access:** the page is password-gated when a `data_entry_password` is set in
+Streamlit secrets; with no password set it stays open but shows a warning (so a
+public deploy isn't left silently writable).
 
 ## Schema (`snapshots` collection)
 
