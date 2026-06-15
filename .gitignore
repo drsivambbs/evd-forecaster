@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 .env
-.streamlit/secrets.toml
+# .streamlit/secrets.toml — intentionally committed (auth-only; NO Firebase key)
 .secrets/
 *-service-account.json
 .DS_Store
