@@ -122,6 +122,68 @@ def _source_block(prefix: str):
             "source_url": s_url, "as_of_date": as_of}
 
 
+_BULK_COLS = ["event_date", "confirmed", "suspected", "deaths"]
+# Accepted aliases -> canonical column name (case-insensitive match).
+_COL_ALIASES = {
+    "event_date": "event_date", "date": "event_date", "day": "event_date",
+    "confirmed": "confirmed", "confirmed_cases": "confirmed",
+    "new_confirmed": "confirmed", "cumulative_confirmed": "confirmed",
+    "suspected": "suspected", "suspected_cases": "suspected",
+    "new_suspected": "suspected", "cumulative_suspected": "suspected",
+    "deaths": "deaths", "death": "deaths",
+    "new_deaths": "deaths", "cumulative_deaths": "deaths",
+}
+
+
+def _read_bulk_csv(uploaded) -> pd.DataFrame:
+    """Read an uploaded CSV into the frame add_snapshots_bulk expects:
+    columns event_date, confirmed, suspected, deaths.
+
+    Accepts common aliases (e.g. `date`, `new_confirmed`). Parses dates
+    flexibly (ISO `YYYY-MM-DD` or `DD Mmm YYYY` recommended). Missing
+    count columns default to 0. Raises ValueError on bad input."""
+    raw = pd.read_csv(uploaded, dtype=str)
+    # map any recognised column (case/space-insensitive) to canonical name
+    rename = {}
+    for c in raw.columns:
+        key = c.strip().lower().replace(" ", "_")
+        if key in _COL_ALIASES:
+            rename[c] = _COL_ALIASES[key]
+    raw = raw.rename(columns=rename)
+
+    if "event_date" not in raw.columns:
+        raise ValueError(
+            "CSV must have a date column (named `event_date` or `date`).")
+
+    out = pd.DataFrame()
+    # format="mixed" parses each value independently, so a file may freely mix
+    # ISO (2026-05-29) and DD Mmm YYYY (29 May 2026) without the format being
+    # locked in from the first row.
+    try:
+        out["event_date"] = pd.to_datetime(raw["event_date"], errors="coerce",
+                                            format="mixed", dayfirst=False)
+    except (ValueError, TypeError):
+        out["event_date"] = pd.to_datetime(raw["event_date"], errors="coerce",
+                                            dayfirst=False)
+    bad = out["event_date"].isna()
+    if bad.any():
+        rows = (raw.index[bad] + 2).tolist()  # +2: header + 1-based
+        raise ValueError(
+            f"Unparseable date(s) on CSV row(s) {rows}. Use YYYY-MM-DD "
+            "(e.g. 2026-05-29) or DD Mmm YYYY (e.g. 29 May 2026).")
+
+    for col in ("confirmed", "suspected", "deaths"):
+        if col in raw.columns:
+            nums = pd.to_numeric(raw[col], errors="coerce")
+            if nums.isna().any():
+                rows = (raw.index[nums.isna()] + 2).tolist()
+                raise ValueError(f"Non-numeric `{col}` on CSV row(s) {rows}.")
+            out[col] = nums.astype(int)
+        else:
+            out[col] = 0  # column absent -> treat as zero
+    return out[_BULK_COLS]
+
+
 tab_one, tab_bulk, tab_manage = st.tabs(
     ["➕ Add one", "📋 Bulk add", "🗂️ Browse / manage"])
 
@@ -183,8 +245,10 @@ with tab_one:
 # TAB 2 — bulk (one bulletin, many dates)
 # ===========================================================================
 with tab_bulk:
-    st.caption("Pick the bulletin's metadata once, then paste/enter many "
-               "per-date rows below. All rows share the source and value type.")
+    st.caption("Pick the bulletin's metadata once, then add many per-date "
+               "rows — either by typing them or by uploading a CSV. All rows "
+               "share the source and value type. Works for any source type "
+               "(WHO DON, Africa CDC, Other).")
     st.markdown('<div class="de-step">1 · Location</div>',
                 unsafe_allow_html=True)
     b_location = st.selectbox("Outbreak location", fss.LOCATIONS, key="b_loc")
@@ -197,33 +261,77 @@ with tab_bulk:
                        key="b_vtype")
     b_note = st.text_input("Note applied to all rows (optional)", key="b_note")
 
-    st.markdown('<div class="de-step">4 · Rows (date + counts)</div>',
-                unsafe_allow_html=True)
     is_cum = b_vtype == "cumulative"
     lbl = "Cumulative" if is_cum else "New"
-    seed = pd.DataFrame({"event_date": [date.today()], "confirmed": [0],
-                         "suspected": [0], "deaths": [0]})
-    edited = st.data_editor(
-        seed, num_rows="dynamic", use_container_width=True, height=320,
-        key="b_editor",
-        column_config={
-            "event_date": st.column_config.DateColumn(
-                "Event date", format="DD MMM YYYY", required=True),
-            "confirmed": st.column_config.NumberColumn(
-                f"{lbl} confirmed", min_value=0, step=1, required=True),
-            "suspected": st.column_config.NumberColumn(
-                f"{lbl} suspected", min_value=0, step=1, required=True),
-            "deaths": st.column_config.NumberColumn(
-                f"{lbl} deaths", min_value=0, step=1, required=True),
-        })
+
+    st.markdown('<div class="de-step">4 · Rows (date + counts)</div>',
+                unsafe_allow_html=True)
+    b_mode = st.radio("How do you want to add rows?",
+                      ["Type rows", "Upload CSV file"], horizontal=True,
+                      key="b_mode")
+
+    # rows to save get collected here, whichever mode is active
+    to_save = None
+
+    if b_mode == "Type rows":
+        seed = pd.DataFrame({"event_date": [date.today()], "confirmed": [0],
+                             "suspected": [0], "deaths": [0]})
+        edited = st.data_editor(
+            seed, num_rows="dynamic", use_container_width=True, height=320,
+            key="b_editor",
+            column_config={
+                "event_date": st.column_config.DateColumn(
+                    "Event date", format="DD MMM YYYY", required=True),
+                "confirmed": st.column_config.NumberColumn(
+                    f"{lbl} confirmed", min_value=0, step=1, required=True),
+                "suspected": st.column_config.NumberColumn(
+                    f"{lbl} suspected", min_value=0, step=1, required=True),
+                "deaths": st.column_config.NumberColumn(
+                    f"{lbl} deaths", min_value=0, step=1, required=True),
+            })
+        to_save = edited
+
+    else:  # "Upload CSV file"
+        st.caption(
+            "CSV needs a **date** column (`event_date` or `date`) plus any of "
+            "`confirmed`, `suspected`, `deaths` (missing ones count as 0). "
+            "Aliases like `new_confirmed` / `cumulative_deaths` are accepted. "
+            "**Dates:** YYYY-MM-DD (e.g. 2026-05-29) or DD Mmm YYYY "
+            "(e.g. 29 May 2026). The bulletin metadata above is applied to "
+            "every row — the CSV holds only dates and counts.")
+        # downloadable template so users know the exact shape
+        _tmpl = pd.DataFrame({
+            "event_date": ["2026-05-29", "2026-05-30"],
+            "confirmed": [134, 5], "suspected": [906, 0], "deaths": [241, 2]})
+        st.download_button(
+            "⬇️ Download CSV template", _tmpl.to_csv(index=False).encode("utf-8"),
+            file_name="bulk_upload_template.csv", mime="text/csv",
+            key="b_tmpl")
+
+        b_csv = st.file_uploader("Upload CSV", type=["csv"], key="b_csv")
+        if b_csv is not None:
+            try:
+                to_save = _read_bulk_csv(b_csv)
+                st.success(f"Loaded {len(to_save)} row(s) from "
+                           f"{b_csv.name}. Review below, then save.")
+                preview = to_save.copy()
+                preview["event_date"] = preview["event_date"].dt.strftime(
+                    "%d %b %Y")
+                st.dataframe(preview, use_container_width=True, height=260,
+                             hide_index=True)
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+                to_save = None
 
     if st.button("Save all rows", type="primary", key="b_save"):
         if not b_src["source_name"].strip():
             st.error("Source name is required.")
+        elif to_save is None or len(to_save) == 0:
+            st.error("No rows to save — add rows or upload a CSV first.")
         else:
             try:
                 n = fss.add_snapshots_bulk(
-                    edited, location=b_location, value_type=b_vtype,
+                    to_save, location=b_location, value_type=b_vtype,
                     note=b_note, **b_src)
                 st.success(f"Saved {n} row(s) ✓ for {b_src['source_name']} "
                            f"({b_location} · {b_vtype}). Existing readings for "
