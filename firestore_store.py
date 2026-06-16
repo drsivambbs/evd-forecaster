@@ -14,7 +14,7 @@ Collection: `snapshots` — one document per reading:
     confirmed     int            cumulative_* OR new_* depending on value_type
     suspected     int
     deaths        int
-    source_type   "WHO DON" | "Africa CDC" | "Other"   (category / filter)
+    source_type   "WHO DON" | "Africa CDC" | "INSP SitRep" | "Other"  (category / filter)
     source_name   e.g. "WHO DON605"   the SPECIFIC bulletin
     source_url    link / DOI
     as_of_date    "YYYY-MM-DD"   publication date of that bulletin
@@ -46,7 +46,7 @@ PROJECT_ID = "evd-snapshot-store"
 COLLECTION = "snapshots"
 
 LOCATIONS = ["DRC", "Uganda"]
-SOURCE_TYPES = ["WHO DON", "Africa CDC", "Other"]
+SOURCE_TYPES = ["WHO DON", "Africa CDC", "INSP SitRep", "Other"]
 VALUE_TYPES = ["cumulative", "incidence"]
 MEASURES = ["confirmed", "suspected", "deaths"]
 

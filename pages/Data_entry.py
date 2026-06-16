@@ -248,7 +248,7 @@ with tab_bulk:
     st.caption("Pick the bulletin's metadata once, then add many per-date "
                "rows — either by typing them or by uploading a CSV. All rows "
                "share the source and value type. Works for any source type "
-               "(WHO DON, Africa CDC, Other).")
+               "(WHO DON, Africa CDC, INSP SitRep, Other).")
     st.markdown('<div class="de-step">1 · Location</div>',
                 unsafe_allow_html=True)
     b_location = st.selectbox("Outbreak location", fss.LOCATIONS, key="b_loc")
