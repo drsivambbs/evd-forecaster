@@ -4549,53 +4549,16 @@ with left:
     }
 
     if input_method == "Manual entry":
-        _data_src = (
-            "DRC DON602/603/605 cumulative"
-            if is_cumulative
-            else "African CDC Bundibugyo Virus Disease Outbreak Situational "
-                 "Report — daily incidence, 01 May–05 Jun 2026"
-        )
-        st.markdown(
-            f'<div style="margin:0.3rem 0 0.6rem 0; padding:0.5rem 0.8rem; '
-            f'background:#fff8e1; border:1px solid #f0d678; border-radius:5px; '
-            f'font-size:0.82rem; color:#6b5a14;">'
-            f'<b>Data shown below</b> ({_data_src}). '
-            f'Edit the rows, add your own, or delete to start fresh before running.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        if is_cumulative:
-            default_cols = {
-                "date": [date(2026, 5, 16), date(2026, 5, 21),
-                         date(2026, 5, 29)],
-                "cumulative_confirmed": [10, 85, 134],
-                "cumulative_suspected": [246, 746, 906],
-                "cumulative_deaths": [84, 186, 241],
-            }
-        else:
-            # African CDC "Bundibugyo Virus Disease Outbreak Situational
-            # Report" — daily incidence, 01 May 2026 → 05 Jun 2026.
-            # Dates absent from the report (03–04 Jun) are filled with zeros.
-            default_cols = {
-                "date": [date(2026, 5, d) for d in range(1, 32)]
-                        + [date(2026, 6, d) for d in range(1, 6)],
-                "new_confirmed": [
-                    1, 1, 2, 0, 1, 0, 2, 2, 0, 2, 2, 1, 5, 3, 7, 20, 9, 20,
-                    11, 1, 0, 0, 5, 10, 4, 0, 16, 4, 78, 51, 19,
-                    39, 23, 0, 0, 105],
-                "new_suspected": [0] * 36,
-                "new_deaths": [
-                    0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 3, 1,
-                    0, 0, 0, 0, 0, 0, 2, 5, 0, 0, 25, 0,
-                    6, 12, 0, 0, 16],
-            }
+        st.caption(
+            "Start with the blank row, add your own, or paste rows in. "
+            "For the stored outbreak data use **Load from Firestore** above.")
+        # Blank starter — no demo dataset (real data lives in the Firestore
+        # store and loads via "Load from Firestore").
+        default_cols = {"date": [date.today()]}
+        for col in VALUE_COLS:
+            default_cols[col] = [0]
         if per_row_source:
-            n_rows = len(default_cols["date"])
-            default_cols["source"] = [
-                "https://www.who.int/.../2026-DON602",
-                "https://www.who.int/.../2026-DON603",
-                "https://www.who.int/.../2026-DON605",
-            ][:n_rows] + [""] * max(0, n_rows - 3)
+            default_cols["source"] = [""]
         default_df = pd.DataFrame(default_cols)
 
         column_config = {"date": st.column_config.DateColumn(
