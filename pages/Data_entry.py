@@ -343,34 +343,134 @@ with tab_bulk:
 # TAB 3 — browse / manage
 # ===========================================================================
 with tab_manage:
-    m_loc = st.selectbox("Filter by location", ["(all)"] + fss.LOCATIONS,
-                         key="m_loc")
-    if st.button("Refresh", key="m_refresh"):
-        st.rerun()
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        m_loc = st.selectbox("Location", ["(all)"] + fss.LOCATIONS,
+                             key="m_loc")
+    with top_r:
+        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh", key="m_refresh", use_container_width=True):
+            st.rerun()
+
     df = fss.load_snapshots(None if m_loc == "(all)" else m_loc)
+
     if df.empty:
         st.info("No snapshots stored yet.")
     else:
-        st.caption(f"{len(df)} document(s). Every version is shown (no as-of "
-                   "reduction here).")
-        show = df.drop(columns=["document_id"]).copy()
+        # ---- Advanced filters -------------------------------------------
+        with st.expander("🔎 Advanced filters", expanded=False):
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                f_stype = st.multiselect(
+                    "Source type", sorted(df["source_type"].dropna().unique()),
+                    key="m_f_stype")
+                f_vtype = st.multiselect(
+                    "Value type", sorted(df["value_type"].dropna().unique()),
+                    key="m_f_vtype")
+            with f2:
+                f_sname = st.multiselect(
+                    "Bulletin (source name)",
+                    sorted(df["source_name"].dropna().unique()),
+                    key="m_f_sname")
+                f_text = st.text_input(
+                    "Search note / source / URL", key="m_f_text",
+                    placeholder="free text…")
+            with f3:
+                _min_d = df["event_date"].min().date()
+                _max_d = df["event_date"].max().date()
+                f_dates = st.date_input(
+                    "Event-date range", value=(_min_d, _max_d),
+                    min_value=_min_d, max_value=_max_d,
+                    format="DD/MM/YYYY", key="m_f_dates")
+
+        fdf = df.copy()
+        if st.session_state.get("m_f_stype"):
+            fdf = fdf[fdf["source_type"].isin(st.session_state["m_f_stype"])]
+        if st.session_state.get("m_f_vtype"):
+            fdf = fdf[fdf["value_type"].isin(st.session_state["m_f_vtype"])]
+        if st.session_state.get("m_f_sname"):
+            fdf = fdf[fdf["source_name"].isin(st.session_state["m_f_sname"])]
+        if isinstance(f_dates, (tuple, list)) and len(f_dates) == 2:
+            lo, hi = pd.to_datetime(f_dates[0]), pd.to_datetime(f_dates[1])
+            fdf = fdf[(fdf["event_date"] >= lo) & (fdf["event_date"] <= hi)]
+        txt = st.session_state.get("m_f_text", "").strip().lower()
+        if txt:
+            hay = (fdf["note"].fillna("") + " " + fdf["source_name"].fillna("")
+                   + " " + fdf["source_url"].fillna("")).str.lower()
+            fdf = fdf[hay.str.contains(txt, regex=False)]
+
+        # ---- Summary chips ----------------------------------------------
+        st.caption(
+            f"Showing **{len(fdf)}** of {len(df)} document(s) · "
+            f"{fdf['source_type'].nunique()} source type(s) · "
+            f"{fdf['source_name'].nunique()} bulletin(s). Every version is "
+            "shown (no as-of reduction). Tick rows to delete.")
+
+        # ---- Table with row-select for deletion -------------------------
+        show = fdf.copy()
+        show.insert(0, "🗑", False)
         show["event_date"] = show["event_date"].dt.strftime("%d %b %Y")
         show["as_of_date"] = show["as_of_date"].dt.strftime("%d %b %Y")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        col_order = ["🗑", "location", "value_type", "event_date",
+                     "confirmed", "suspected", "deaths", "source_type",
+                     "source_name", "as_of_date", "source_url", "note",
+                     "document_id"]
+        show = show[[c for c in col_order if c in show.columns]]
+        edited_tbl = st.data_editor(
+            show, use_container_width=True, hide_index=True, height=420,
+            key="m_table",
+            disabled=[c for c in show.columns if c != "🗑"],
+            column_config={
+                "🗑": st.column_config.CheckboxColumn(
+                    "🗑", help="Tick to mark for deletion", width="small"),
+                "document_id": None,  # hidden — kept for the delete call
+                "value_type": st.column_config.TextColumn("type", width="small"),
+                "source_type": st.column_config.TextColumn("source"),
+                "source_name": st.column_config.TextColumn("bulletin"),
+                "source_url": st.column_config.LinkColumn("url"),
+                "confirmed": st.column_config.NumberColumn("conf.",
+                                                           width="small"),
+                "suspected": st.column_config.NumberColumn("susp.",
+                                                           width="small"),
+                "deaths": st.column_config.NumberColumn("deaths",
+                                                        width="small"),
+            })
 
-        st.markdown('<div class="de-step">Delete a document</div>',
-                    unsafe_allow_html=True)
-        labels = {
-            f"{r.location} · {r.value_type} · "
-            f"{pd.to_datetime(r.event_date):%d %b %Y} · {r.source_name} "
-            f"(as-of {pd.to_datetime(r.as_of_date):%d %b %Y})": r.document_id
-            for r in df.itertuples(index=False)}
-        pick = st.selectbox("Pick a document", list(labels.keys()),
-                            key="m_pick")
-        if st.button("Delete selected", key="m_del"):
-            try:
-                fss.delete_snapshot(labels[pick])
-                st.success("Deleted ✓")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Delete failed: {e}")
+        picked_ids = edited_tbl.loc[edited_tbl["🗑"], "document_id"].tolist()
+
+        # ---- Delete actions ---------------------------------------------
+        st.markdown('<div class="de-step">Delete</div>', unsafe_allow_html=True)
+        d1, d2 = st.columns(2)
+
+        # (a) delete the ticked rows
+        with d1:
+            if st.button(f"🗑 Delete selected ({len(picked_ids)})",
+                         disabled=not picked_ids, use_container_width=True,
+                         key="m_del_sel"):
+                try:
+                    n = fss.delete_snapshots(picked_ids)
+                    st.success(f"Deleted {n} document(s) ✓")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
+
+        # (b) clear all (respects the location selector), double-confirmed
+        with d2:
+            scope = "ALL locations" if m_loc == "(all)" else m_loc
+            with st.popover(f"🧨 Clear all ({scope})",
+                            use_container_width=True):
+                st.warning(
+                    f"This permanently deletes **every** stored document for "
+                    f"**{scope}** ({len(df)} row(s)). This cannot be undone.")
+                confirm = st.text_input(
+                    "Type DELETE to confirm", key="m_clear_confirm",
+                    placeholder="DELETE")
+                if st.button("Permanently clear", type="primary",
+                             disabled=(confirm != "DELETE"), key="m_clear_go"):
+                    try:
+                        n = fss.delete_all(
+                            None if m_loc == "(all)" else m_loc)
+                        st.success(f"Cleared {n} document(s) ✓")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Clear failed: {e}")

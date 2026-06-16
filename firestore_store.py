@@ -236,6 +236,34 @@ def delete_snapshot(document_id: str) -> None:
     get_client().collection(COLLECTION).document(document_id).delete()
 
 
+def delete_snapshots(document_ids) -> int:
+    """Batch-delete the given document ids. Returns how many were deleted."""
+    client = get_client()
+    col = client.collection(COLLECTION)
+    batch = client.batch()
+    n = 0
+    for did in document_ids:
+        batch.delete(col.document(did))
+        n += 1
+        if n % 450 == 0:          # Firestore batch limit is 500
+            batch.commit()
+            batch = client.batch()
+    if n:
+        batch.commit()
+    return n
+
+
+def delete_all(location: str | None = None) -> int:
+    """Delete every snapshot, or every snapshot for one location. Returns the
+    count deleted. Irreversible — the caller must confirm intent."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    col = get_client().collection(COLLECTION)
+    q = (col.where(filter=FieldFilter("location", "==", location))
+         if location else col)
+    ids = [snap.id for snap in q.stream()]
+    return delete_snapshots(ids)
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
