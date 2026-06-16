@@ -4685,25 +4685,59 @@ with left:
                     help="For each event date, uses the latest bulletin "
                          "published on or before this date — set it back in "
                          "time to backtest what the data looked like then.")
+
+            # Source picker — choose all sources, one source type, or one
+            # specific bulletin. Populated from what's actually stored.
+            try:
+                srcs = fss.available_sources(fs_location)
+            except Exception:
+                srcs = None
+            fs_source_type = None
+            fs_source_name = None
+            if srcs is not None and not srcs.empty:
+                type_opts = ["All sources"] + sorted(
+                    srcs["source_type"].unique().tolist())
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    pick_type = st.selectbox(
+                        "Source", type_opts, key="fs_source_type",
+                        help="Restrict Step 1 to a single data source (e.g. "
+                             "INSP SitRep) instead of merging all sources.")
+                fs_source_type = None if pick_type == "All sources" else pick_type
+                # within a chosen source type, optionally pick one bulletin
+                if fs_source_type:
+                    names = srcs.loc[srcs["source_type"] == fs_source_type,
+                                     "source_name"].tolist()
+                    with sc2:
+                        pick_name = st.selectbox(
+                            "Bulletin", ["All bulletins"] + names,
+                            key="fs_source_name",
+                            help="Optionally narrow to one specific bulletin "
+                                 "within the chosen source.")
+                    fs_source_name = (None if pick_name == "All bulletins"
+                                      else pick_name)
+
             fs_vtype = "cumulative" if is_cumulative else "incidence"
             try:
-                fs_df = fss.load_for_step1(fs_location, fs_vtype,
-                                            as_of=fs_as_of)
+                fs_df = fss.load_for_step1(
+                    fs_location, fs_vtype, as_of=fs_as_of,
+                    source_type=fs_source_type, source_name=fs_source_name)
             except Exception as e:
                 st.error(f"Could not load from Firestore: {e}")
                 fs_df = None
+            _src_lbl = (fs_source_name or fs_source_type or "all sources")
             if fs_df is None:
                 pass
             elif fs_df.empty:
                 st.warning(
-                    f"No {fs_vtype} snapshots stored for {fs_location} as of "
-                    f"{fs_as_of:%d %b %Y}. Add data via the data-entry app "
-                    "(`streamlit run data_entry.py`), or switch the "
-                    "'Values are' toggle to match the stored value type.")
+                    f"No {fs_vtype} snapshots stored for {fs_location} "
+                    f"({_src_lbl}) as of {fs_as_of:%d %b %Y}. Add data via "
+                    "the data-entry page, pick a different source, or switch "
+                    "the 'Values are' toggle to match the stored value type.")
             else:
                 st.success(
                     f"Loaded {len(fs_df)} date(s) for {fs_location} "
-                    f"({fs_vtype}) as of {fs_as_of:%d %b %Y}.")
+                    f"({fs_vtype} · {_src_lbl}) as of {fs_as_of:%d %b %Y}.")
                 preview = fs_df.head(8).copy()
                 preview["date"] = pd.to_datetime(
                     preview["date"]).dt.strftime("%d %b %Y")

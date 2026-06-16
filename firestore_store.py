@@ -269,11 +269,26 @@ def load_snapshots(location: str | None = None) -> pd.DataFrame:
                                  "as_of_date"], ignore_index=True)
 
 
-def load_for_step1(location: str, value_type: str, as_of=None) -> pd.DataFrame:
+def available_sources(location: str) -> pd.DataFrame:
+    """Distinct (source_type, source_name) pairs stored for a location, with a
+    count of documents each — used to populate the Step 1 source picker."""
+    df = load_snapshots(location)
+    if df.empty:
+        return pd.DataFrame(columns=["source_type", "source_name", "n"])
+    g = (df.groupby(["source_type", "source_name"])
+           .size().reset_index(name="n"))
+    return g.sort_values(["source_type", "source_name"], ignore_index=True)
+
+
+def load_for_step1(location: str, value_type: str, as_of=None,
+                   source_type=None, source_name=None) -> pd.DataFrame:
     """Return the exact frame Step 1 expects, with as-of reduction applied.
 
     For each event_date, keeps the reading from the LATEST bulletin published
     on or before `as_of` (newest as_of_date wins; ties broken by ingested_at).
+    Optionally restrict to one `source_type` (e.g. "INSP SitRep") and/or one
+    specific `source_name` bulletin before the as-of reduction, so a single
+    source can be charted on its own.
     Columns returned match app.py:
         cumulative -> date, cumulative_confirmed/suspected/deaths, source
         incidence  -> date, new_confirmed/suspected/deaths, source
@@ -285,6 +300,13 @@ def load_for_step1(location: str, value_type: str, as_of=None) -> pd.DataFrame:
     if df.empty:
         return df
     df = df[df["value_type"] == value_type].copy()
+    if df.empty:
+        return df
+
+    if source_type:
+        df = df[df["source_type"] == source_type]
+    if source_name:
+        df = df[df["source_name"] == source_name]
     if df.empty:
         return df
 
